@@ -434,6 +434,15 @@ function CloseItem({item,refresh,notify}){
     const res=await apiPost({action:"upsert", lead:Object.assign({ID:l.ID},extra)});
     setBusy(false); setResched(false); if(res.ok){ notify("Rescheduled"); refresh(); } else notify("Failed");
   }
+  async function cancelIt(){
+    if(!confirm("Delete this "+item.type.toLowerCase()+"? It will be removed from the pipeline and the calendar (the lead stays).")) return;
+    setBusy(true);
+    const extra=item.type==="Meeting"
+      ? {Status:"Interested","Meeting Date":"","Meeting Time":""}
+      : {Status:"Interested","Followup Date":"","Followup Time":"","Followup Sent":""};
+    const res=await apiPost({action:"upsert", lead:Object.assign({ID:l.ID},extra)});
+    setBusy(false); if(res.ok){ notify("Deleted"); refresh(); } else notify("Failed");
+  }
   return (
     <div className="border-t border-slate-100 py-2 first:border-0">
       <div className="text-sm">
@@ -450,6 +459,7 @@ function CloseItem({item,refresh,notify}){
               <option>Landed</option><option>No Show</option><option>Interested</option><option>Not Interested</option><option>Dumped</option>
             </select>
             <button onClick={()=>setResched(true)} className="px-2 py-1 rounded-lg bg-slate-100 text-sm">Reschedule</button>
+            <button onClick={cancelIt} disabled={busy} className="px-2 py-1 rounded-lg bg-red-50 text-red-600 text-sm">✕ Delete</button>
           </div>
         : <div className="flex flex-wrap gap-2 mt-1 items-center">
             <input type="date" value={dt.date} onChange={e=>setDt({...dt,date:e.target.value})} className="border rounded-lg px-2 py-1 text-sm"/>
@@ -468,6 +478,12 @@ function MeetingsPipeline({leads,refresh,notify}){
   const all=pipelineEvents(leads);
   const due=all.filter(e=>e.when.getTime()<=now).sort((a,b)=>a.when-b.when);
   const up=all.filter(e=>e.when.getTime()>now).sort((a,b)=>a.when-b.when);
+  async function cancelEvent(e){
+    if(!confirm("Delete this "+e.type.toLowerCase()+" for "+(e.lead.Clinic||e.lead.Name)+"?")) return;
+    const extra=e.type==="Meeting"?{Status:"Interested","Meeting Date":"","Meeting Time":""}:{Status:"Interested","Followup Date":"","Followup Time":"","Followup Sent":""};
+    const res=await apiPost({action:"upsert", lead:Object.assign({ID:e.lead.ID},extra)});
+    if(res.ok){ notify("Deleted"); refresh(); } else notify("Failed");
+  }
   return (
     <div className="space-y-4">
       <div className="bg-white rounded-2xl border border-slate-200 p-4">
@@ -487,7 +503,10 @@ function MeetingsPipeline({leads,refresh,notify}){
                   <span className={"px-2 py-0.5 rounded-full text-xs mr-2 "+(e.type==="Meeting"?"bg-green-100 text-green-700":"bg-amber-100 text-amber-700")}>{e.type}</span>
                   <b>{e.lead.Clinic||e.lead.Name}</b> <span className="text-slate-400">· {e.lead["Assigned To"]||""}</span>
                 </div>
-                <div className="text-slate-500">{fmtWhen(e.when)} · <b className={e.when.getTime()-now<30*60000?"text-red-600":""}>{fmtCountdown(e.when.getTime()-now)}</b></div>
+                <div className="flex items-center gap-3">
+                  <span className="text-slate-500">{fmtWhen(e.when)} · <b className={e.when.getTime()-now<30*60000?"text-red-600":""}>{fmtCountdown(e.when.getTime()-now)}</b></span>
+                  <button onClick={()=>cancelEvent(e)} className="text-red-400 hover:text-red-600 text-xs">✕</button>
+                </div>
               </div>
             ))}
       </div>
@@ -578,7 +597,7 @@ function AdminView({leads,interns,stats,refresh,notify}){
 
       {section==="dashboard" && <React.Fragment>
         <SummaryCards leads={leads}/>
-        <TeamStats leads={leads} internNames={internNames} stats={stats}/>
+        <TeamStats leads={leads} internNames={internNames} stats={stats} refresh={refresh} notify={notify}/>
         <TeamUpcoming leads={leads}/>
       </React.Fragment>}
 
@@ -694,6 +713,7 @@ function SummaryCards({leads}){
 
 function DuplicatesTool({leads,refresh,notify}){
   const [busy,setBusy]=useState(false);
+  const [review,setReview]=useState(false);
   function keyOf(l){ const p=String(l.Phone||"").replace(/\D/g,""); if(p) return "p:"+p.slice(-10); const n=String(l.Clinic||l.Name||"").trim().toLowerCase(); return n?"n:"+n:""; }
   const groups=useMemo(()=>{
     const m={}; leads.forEach(l=>{ const k=keyOf(l); if(!k) return; (m[k]=m[k]||[]).push(l); });
@@ -711,17 +731,46 @@ function DuplicatesTool({leads,refresh,notify}){
     }
     setBusy(false); notify("Removed "+dupCount+" duplicates"); refresh();
   }
+  async function delOne(id){
+    if(!confirm("Delete this duplicate record? (This can't be undone.)")) return;
+    setBusy(true); const res=await apiPost({action:"delete", id}); setBusy(false);
+    notify(res.ok?"Deleted":"Failed"); refresh();
+  }
   if(!groups.length) return <div className="bg-white rounded-2xl border border-slate-200 p-4 text-sm text-slate-500">✓ No duplicate leads found.</div>;
   return (
-    <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-2">
-      <div className="flex items-center justify-between">
+    <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="font-semibold text-amber-900">🔁 Duplicates: {groups.length} groups · {dupCount} extra record(s)</div>
-        <button onClick={removeAll} disabled={busy} className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-sm disabled:opacity-40">{busy?"Removing…":"Remove duplicates"}</button>
+        <div className="flex gap-2">
+          <button onClick={()=>setReview(!review)} className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-800 text-sm">{review?"Hide review":"Review & choose"}</button>
+          <button onClick={removeAll} disabled={busy} className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-sm disabled:opacity-40">{busy?"Removing…":"Auto-remove (keep best)"}</button>
+        </div>
       </div>
-      <div className="max-h-40 overflow-y-auto no-scrollbar text-xs text-amber-800 space-y-0.5">
-        {groups.slice(0,25).map((g,i)=><div key={i}>• {g[0].Clinic||g[0].Name} — {g.length} copies</div>)}
-      </div>
-      <div className="text-[11px] text-amber-700">Keeps the record with a meeting / notes / assignment; deletes the rest.</div>
+      {!review
+        ? <div className="max-h-40 overflow-y-auto no-scrollbar text-xs text-amber-800 space-y-0.5">
+            {groups.slice(0,30).map((g,i)=><div key={i}>• {g[0].Clinic||g[0].Name} — {g.length} copies</div>)}
+          </div>
+        : <div className="space-y-2 max-h-96 overflow-y-auto no-scrollbar">
+            {groups.map((g,gi)=>{
+              const best=g.slice().sort((a,b)=>score(b)-score(a))[0];
+              return (
+                <div key={gi} className="bg-white rounded-lg border border-amber-200 p-2">
+                  <div className="text-[11px] font-semibold text-slate-500 mb-1">{g.length} copies of “{g[0].Clinic||g[0].Name}”</div>
+                  {g.map(l=>(
+                    <div key={l.ID} className="flex items-center justify-between text-sm border-t border-slate-100 py-1.5 first:border-0">
+                      <div className="min-w-0">
+                        <span className="font-medium">{l.Clinic||l.Name}</span>
+                        {l.ID===best.ID && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">keep</span>}
+                        <div className="text-[11px] text-slate-400 truncate">{l.Phone||"no phone"} · {l.City||"—"} · {l["Assigned To"]||"unassigned"} · {l.Status||"New"}{l.Notes?" · has notes":""}</div>
+                      </div>
+                      <button onClick={()=>delOne(l.ID)} disabled={busy} className="text-red-500 text-xs ml-2 shrink-0">Delete</button>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>}
+      <div className="text-[11px] text-amber-700">Auto-remove keeps the record with a meeting / notes / assignment and deletes the rest. Or <b>Review &amp; choose</b> to pick exactly which copies to delete.</div>
     </div>
   );
 }
@@ -924,8 +973,9 @@ function TeamManager({interns,refresh,notify}){
 }
 
 /* ================== TEAM STATS ================== */
-function TeamStats({leads,internNames,stats}){
+function TeamStats({leads,internNames,stats,refresh,notify}){
   stats=stats||{};
+  const [detail,setDetail]=useState(null);
   const rows=internNames.map(name=>{
     const s=stats[name]||{};
     const dials=s.dials||0, convos=s.conversations||0, meetings=s.meetings||0, followups=s.followups||0, landed=s.landed||0;
@@ -946,7 +996,7 @@ function TeamStats({leads,internNames,stats}){
           <tbody>
             {rows.map(r=>(
               <tr key={r.name} className="border-t border-slate-100">
-                <td className="py-2 pr-4 font-medium">{r.name}</td>
+                <td className="py-2 pr-4 font-medium"><button onClick={()=>setDetail(r.name)} className="text-indigo-600 hover:underline">{r.name}</button></td>
                 <td className="py-2 px-2 text-slate-500">{r.assigned}</td>
                 <td className="py-2 px-2">{r.dials}</td><td className="py-2 px-2">{r.convos}</td>
                 <td className="py-2 px-2">{r.meetings}</td><td className="py-2 px-2">{r.followups}</td>
@@ -957,7 +1007,74 @@ function TeamStats({leads,internNames,stats}){
           </tbody>
         </table>
       </div>
-      <div className="text-xs text-slate-400 mt-2">Booking % = meetings ÷ dials · Close % = landed ÷ meetings</div>
+      <div className="text-xs text-slate-400 mt-2">Booking % = meetings ÷ dials · Close % = landed ÷ meetings · tap a name to manage</div>
+      {detail && <InternDetail name={detail} leads={leads} internNames={internNames} stats={stats} refresh={refresh} notify={notify} onClose={()=>setDetail(null)}/>}
+    </div>
+  );
+}
+
+function InternDetail({name,leads,internNames,stats,refresh,notify,onClose}){
+  const mine=leads.filter(l=>String(l["Assigned To"]||"").trim().toLowerCase()===name.toLowerCase());
+  const s=(stats||{})[name]||{};
+  const [edit,setEdit]=useState(null);
+  const [reassignTo,setReassignTo]=useState("");
+  const [busy,setBusy]=useState(false);
+  const others=internNames.filter(n=>n!==name);
+  async function bulk(field,value,msg,confirmMsg){
+    if(!confirm(confirmMsg)) return;
+    const rows=mine.map(l=>l._row).filter(Boolean);
+    if(!rows.length){ notify("No leads"); return; }
+    setBusy(true);
+    const res=await apiPost({action:"bulkField", rows, field, value});
+    setBusy(false); notify(res.ok?(msg+" ("+res.updated+")"):"Failed"); refresh(); onClose();
+  }
+  async function resetStats(){
+    if(!confirm("Reset "+name+"’s call stats (dials/convos/meetings) to zero?")) return;
+    const cur=Object.assign({},stats||{}); delete cur[name];
+    setBusy(true); await apiPost({action:"saveStats", stats:cur}); setBusy(false); notify("Stats reset for "+name); refresh(); onClose();
+  }
+  async function del(l){ if(!confirm("Delete "+(l.Clinic||l.Name)+"?")) return; await apiPost({action:"delete", id:l.ID}); notify("Deleted"); refresh(); }
+  const stat=(label,v)=>(<div className="text-center px-2"><div className="text-lg font-bold">{v||0}</div><div className="text-[10px] uppercase text-slate-400">{label}</div></div>);
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      {edit && <EditLead lead={edit} onClose={()=>setEdit(null)} refresh={refresh} notify={notify}/>}
+      <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto no-scrollbar p-4 space-y-3" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <div className="text-lg font-bold">{name}</div>
+          <button onClick={onClose} className="text-slate-400 text-lg leading-none">✕</button>
+        </div>
+        <div className="flex flex-wrap gap-1 bg-slate-50 rounded-xl border border-slate-200 py-2">
+          {stat("Assigned",mine.length)}{stat("Dials",s.dials)}{stat("Convos",s.conversations)}{stat("Meetings",s.meetings)}{stat("Follow-ups",s.followups)}{stat("Landed",s.landed)}
+        </div>
+        <div className="flex flex-wrap gap-2 items-center">
+          <select value={reassignTo} onChange={e=>setReassignTo(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm">
+            <option value="">Reassign all to…</option>{others.map(n=><option key={n}>{n}</option>)}<option>Team</option>
+          </select>
+          <button disabled={busy||!reassignTo} onClick={()=>bulk("Assigned To",reassignTo,"Reassigned to "+reassignTo,"Reassign all "+mine.length+" of "+name+"’s leads to "+reassignTo+"?")} className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm disabled:opacity-40">Go</button>
+          <button disabled={busy} onClick={()=>bulk("Assigned To","Team","Unassigned","Unassign all "+mine.length+" of "+name+"’s leads back to the Team pool?")} className="px-3 py-1.5 rounded-lg bg-slate-100 text-sm">Unassign all</button>
+          <button disabled={busy} onClick={resetStats} className="px-3 py-1.5 rounded-lg bg-amber-50 text-amber-700 text-sm">Reset stats</button>
+        </div>
+        <div className="border border-slate-200 rounded-xl overflow-hidden">
+          <div className="px-3 py-2 text-sm text-slate-500 border-b">{mine.length} leads assigned to {name}</div>
+          <div className="max-h-72 overflow-y-auto no-scrollbar">
+            <table className="w-full text-sm">
+              <tbody>
+                {mine.map((l,i)=>(
+                  <tr key={l.ID||i} className="border-t border-slate-100 first:border-0">
+                    <td className="px-3 py-2"><div className="font-medium">{l.Clinic||l.Name}</div><div className="text-[11px] text-slate-400">{l.Phone||"no phone"} · {l.City}</div></td>
+                    <td className="px-3 py-2"><StatusBadge status={l.Status}/></td>
+                    <td className="px-3 py-2 whitespace-nowrap text-right">
+                      <button onClick={()=>setEdit(l)} className="text-slate-400 hover:text-indigo-600 mr-2">✎</button>
+                      <button onClick={()=>del(l)} className="text-red-400 hover:text-red-600">✕</button>
+                    </td>
+                  </tr>
+                ))}
+                {mine.length===0 && <tr><td className="px-3 py-3 text-sm text-slate-400">No leads assigned.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

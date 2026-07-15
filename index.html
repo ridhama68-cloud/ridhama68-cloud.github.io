@@ -25,8 +25,10 @@ const API_URL = "https://script.google.com/macros/s/AKfycbyiR6uKYWUA9dFhRwAxA0AO
 
 const OUTCOMES = [
   "Not Answering","Interested","Not Interested",
-  "Meeting Booked","Schedule Follow-up","Landed","Dumped"
+  "Meeting Booked","Schedule Follow-up","Landed","No Show","Dumped"
 ];
+// Statuses that mean a meeting/follow-up is CLOSED (out of the pending pipeline)
+const CLOSED_STATUSES = ["Landed","No Show","Not Interested","Dumped"];
 const CONVO_OUTCOMES = ["Interested","Not Interested","Landed"];
 
 /* ================== API ================== */
@@ -400,6 +402,99 @@ function QuickSchedule({leads,user,refresh,notify}){
   );
 }
 
+/* ============ CLOSING PIPELINE (meetings / follow-ups) ============ */
+function isClosed_(status){ return CLOSED_STATUSES.some(function(s){ return String(status||"").toLowerCase()===s.toLowerCase(); }); }
+
+function pipelineEvents(leads){
+  const out=[];
+  leads.forEach(function(l){
+    if(/^meeting booked$/i.test(l.Status||"")){ const at=leadDateTime(l["Meeting Date"],l["Meeting Time"]); if(at) out.push({lead:l,type:"Meeting",when:at}); }
+    if(/^schedule follow-up$/i.test(l.Status||"")){ const at=leadDateTime(l["Followup Date"],l["Followup Time"]); if(at) out.push({lead:l,type:"Follow-up",when:at}); }
+  });
+  return out;
+}
+
+function CloseItem({item,refresh,notify}){
+  const l=item.lead;
+  const [busy,setBusy]=useState(false);
+  const [resched,setResched]=useState(false);
+  const [dt,setDt]=useState({date:todayISO(),time:"11:00"});
+  const overdueHrs=(Date.now()-item.when.getTime())/3600000;
+  async function closeAs(status){
+    if(!status) return;
+    setBusy(true);
+    const res=await apiPost({action:"upsert", lead:{ID:l.ID, Status:status}, logStat:{intern:l["Assigned To"]||"", outcome:status}});
+    setBusy(false); if(res.ok){ notify("Closed: "+status); refresh(); } else notify("Failed: "+res.error);
+  }
+  async function saveResched(){
+    setBusy(true);
+    const extra=item.type==="Meeting"
+      ? {Status:"Meeting Booked","Meeting Date":dt.date,"Meeting Time":dt.time,"DayBefore Sent":"","1Hr Sent":"","30Min Sent":""}
+      : {Status:"Schedule Follow-up","Followup Date":dt.date,"Followup Time":dt.time,"Followup Sent":""};
+    const res=await apiPost({action:"upsert", lead:Object.assign({ID:l.ID},extra)});
+    setBusy(false); setResched(false); if(res.ok){ notify("Rescheduled"); refresh(); } else notify("Failed");
+  }
+  return (
+    <div className="border-t border-slate-100 py-2 first:border-0">
+      <div className="text-sm">
+        <span className={"px-2 py-0.5 rounded-full text-xs mr-2 "+(item.type==="Meeting"?"bg-green-100 text-green-700":"bg-amber-100 text-amber-700")}>{item.type}</span>
+        <b>{l.Clinic||l.Name}</b>
+        <span className="text-slate-400"> · {fmtWhen(item.when)} · {l["Assigned To"]||"unassigned"}</span>
+        {overdueHrs>2 && <span className="ml-2 text-red-500 text-xs">no-show risk</span>}
+      </div>
+      {!resched
+        ? <div className="flex flex-wrap gap-2 mt-1 items-center">
+            {l.Phone && <a href={"tel:"+digits(l.Phone)} className="px-2 py-1 rounded-lg bg-green-600 text-white text-xs">📞 Call</a>}
+            <select disabled={busy} value="" onChange={e=>closeAs(e.target.value)} className="border rounded-lg px-2 py-1 text-sm">
+              <option value="">Close as…</option>
+              <option>Landed</option><option>No Show</option><option>Interested</option><option>Not Interested</option><option>Dumped</option>
+            </select>
+            <button onClick={()=>setResched(true)} className="px-2 py-1 rounded-lg bg-slate-100 text-sm">Reschedule</button>
+          </div>
+        : <div className="flex flex-wrap gap-2 mt-1 items-center">
+            <input type="date" value={dt.date} onChange={e=>setDt({...dt,date:e.target.value})} className="border rounded-lg px-2 py-1 text-sm"/>
+            <input type="time" value={dt.time} onChange={e=>setDt({...dt,time:e.target.value})} className="border rounded-lg px-2 py-1 text-sm"/>
+            <button onClick={saveResched} disabled={busy} className="px-2 py-1 rounded-lg bg-indigo-600 text-white text-sm">Save</button>
+            <button onClick={()=>setResched(false)} className="px-2 py-1 rounded-lg bg-white border text-sm">Cancel</button>
+          </div>}
+    </div>
+  );
+}
+
+function MeetingsPipeline({leads,refresh,notify}){
+  const [,setTick]=useState(0);
+  useEffect(()=>{ const id=setInterval(()=>setTick(t=>t+1),60000); return ()=>clearInterval(id); },[]);
+  const now=Date.now();
+  const all=pipelineEvents(leads);
+  const due=all.filter(e=>e.when.getTime()<=now).sort((a,b)=>a.when-b.when);
+  const up=all.filter(e=>e.when.getTime()>now).sort((a,b)=>a.when-b.when);
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <div className="font-semibold mb-1">🔴 Needs closing ({due.length})</div>
+        <div className="text-[11px] text-slate-400 mb-2">Meetings & follow-ups whose time has passed but aren’t closed yet. Close each with an outcome (or reschedule) so nothing sits in limbo.</div>
+        {due.length===0
+          ? <div className="text-sm text-slate-400">Nothing waiting to be closed. 🎉</div>
+          : due.map((e,i)=><CloseItem key={(e.lead.ID||i)+"_"+e.type} item={e} refresh={refresh} notify={notify}/>)}
+      </div>
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <div className="font-semibold mb-2">📅 Upcoming ({up.length})</div>
+        {up.length===0
+          ? <div className="text-sm text-slate-400">No upcoming meetings or follow-ups.</div>
+          : up.map((e,i)=>(
+              <div key={(e.lead.ID||i)+"_"+e.type} className="flex items-center justify-between text-sm border-t border-slate-100 py-2 first:border-0">
+                <div>
+                  <span className={"px-2 py-0.5 rounded-full text-xs mr-2 "+(e.type==="Meeting"?"bg-green-100 text-green-700":"bg-amber-100 text-amber-700")}>{e.type}</span>
+                  <b>{e.lead.Clinic||e.lead.Name}</b> <span className="text-slate-400">· {e.lead["Assigned To"]||""}</span>
+                </div>
+                <div className="text-slate-500">{fmtWhen(e.when)} · <b className={e.when.getTime()-now<30*60000?"text-red-600":""}>{fmtCountdown(e.when.getTime()-now)}</b></div>
+              </div>
+            ))}
+      </div>
+    </div>
+  );
+}
+
 /* ================== ADMIN ================== */
 function AdminView({leads,interns,stats,refresh,notify}){
   const [section,setSection]=useState("dashboard");    // dashboard | leads | team
@@ -471,7 +566,7 @@ function AdminView({leads,interns,stats,refresh,notify}){
     setBusy(true); await apiPost({action:"clearAll"}); setBusy(false); notify("All leads cleared"); refresh();
   }
 
-  const tabs=[["dashboard","📊 Dashboard"],["leads","📇 Leads"],["team","👥 Team"]];
+  const tabs=[["dashboard","📊 Dashboard"],["leads","📇 Leads"],["pipeline","✅ Pipeline"],["team","👥 Team"]];
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-4">
       <div className="flex gap-1 bg-slate-100 rounded-full p-1 w-max">
@@ -486,6 +581,8 @@ function AdminView({leads,interns,stats,refresh,notify}){
         <TeamStats leads={leads} internNames={internNames} stats={stats}/>
         <TeamUpcoming leads={leads}/>
       </React.Fragment>}
+
+      {section==="pipeline" && <MeetingsPipeline leads={leads} refresh={refresh} notify={notify}/>}
 
       {section==="team" && <TeamManager interns={interns} refresh={refresh} notify={notify}/>}
 
@@ -907,6 +1004,7 @@ function InternView({user,leads,stats,refresh,notify}){
     const srv=(stats||{})[user]||{};
     return {assigned:mine.length, dials:srv.dials||0, convos:srv.conversations||0, meetings:srv.meetings||0, followups:srv.followups||0};
   },[mine,stats,user]);
+  const dueCount=useMemo(()=>pipelineEvents(mine).filter(e=>e.when.getTime()<=Date.now()).length,[mine]);
 
   return (
     <div className="p-4 max-w-2xl mx-auto space-y-4">
@@ -914,17 +1012,20 @@ function InternView({user,leads,stats,refresh,notify}){
         <StatsBar s={myStats}/>
         <div className="flex gap-1 bg-slate-100 rounded-full p-1">
           <button onClick={()=>setMode("call")} className={"px-3 py-1 rounded-full text-sm "+(mode==="call"?"bg-white shadow":"")}>Call</button>
+          <button onClick={()=>setMode("close")} className={"px-3 py-1 rounded-full text-sm "+(mode==="close"?"bg-white shadow":"")}>Close{dueCount>0?" ("+dueCount+")":""}</button>
           <button onClick={()=>setMode("list")} className={"px-3 py-1 rounded-full text-sm "+(mode==="list"?"bg-white shadow":"")}>List</button>
         </div>
       </div>
       <QuickSchedule leads={mine} user={user} refresh={refresh} notify={notify}/>
       {mode==="list"
-        ? <InternList mine={mine}/>
-        : (queue.length===0
-            ? <div className="bg-white rounded-2xl border p-8 text-center text-slate-500">No leads in your queue. 🎉</div>
-            : <CallCard key={active.ID} lead={active} user={user} position={idx+1} total={queue.length}
-                onPrev={()=>setIdx(Math.max(0,idx-1))} onNext={()=>setIdx(Math.min(queue.length-1,idx+1))}
-                onSaved={refresh} notify={notify}/>)}
+        ? <InternList mine={mine} refresh={refresh} notify={notify}/>
+        : mode==="close"
+          ? <MeetingsPipeline leads={mine} refresh={refresh} notify={notify}/>
+          : (queue.length===0
+              ? <div className="bg-white rounded-2xl border p-8 text-center text-slate-500">No leads in your queue. 🎉</div>
+              : <CallCard key={active.ID} lead={active} user={user} position={idx+1} total={queue.length}
+                  onPrev={()=>setIdx(Math.max(0,idx-1))} onNext={()=>setIdx(Math.min(queue.length-1,idx+1))}
+                  onSaved={refresh} notify={notify}/>)}
     </div>
   );
 }
@@ -934,21 +1035,24 @@ function StatsBar({s}){
   return <div className="flex gap-4 bg-white rounded-xl border border-slate-200 px-4 py-2">{item("Queue",s.assigned)}{item("Dials",s.dials)}{item("Convos",s.convos)}{item("Meetings",s.meetings)}{item("Follow",s.followups)}</div>;
 }
 
-function InternList({mine}){
+function InternList({mine,refresh,notify}){
+  const [edit,setEdit]=useState(null);
   return (
     <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-      <div className="px-4 py-2 text-sm text-slate-500 border-b">{mine.length} assigned to you</div>
+      {edit && <EditLead lead={edit} onClose={()=>setEdit(null)} refresh={refresh} notify={notify}/>}
+      <div className="px-4 py-2 text-sm text-slate-500 border-b">{mine.length} assigned to you · tap ✎ to add/fix a number</div>
       <table className="w-full text-sm">
         <thead className="bg-slate-50 text-slate-500 text-left"><tr>
-          <th className="px-3 py-2">#</th><th className="px-3 py-2">Clinic</th><th className="px-3 py-2">City</th><th className="px-3 py-2">Phone</th><th className="px-3 py-2">Status</th></tr></thead>
+          <th className="px-3 py-2">#</th><th className="px-3 py-2">Clinic</th><th className="px-3 py-2">City</th><th className="px-3 py-2">Phone</th><th className="px-3 py-2">Status</th><th className="px-3 py-2"></th></tr></thead>
         <tbody>
           {mine.map((l,i)=>(
             <tr key={l.ID||i} className="border-t border-slate-100">
               <td className="px-3 py-2 text-slate-400">{i+1}</td>
               <td className="px-3 py-2 font-medium">{l.Clinic||l.Name}</td>
               <td className="px-3 py-2">{l.City}</td>
-              <td className="px-3 py-2">{l.Phone}</td>
+              <td className={"px-3 py-2 "+((!l.Phone||String(l.Phone).trim()==="")?"text-red-400":"")}>{l.Phone||"— add"}</td>
               <td className="px-3 py-2"><StatusBadge status={l.Status}/></td>
+              <td className="px-3 py-2"><button onClick={()=>setEdit(l)} className="text-slate-400 hover:text-indigo-600">✎</button></td>
             </tr>
           ))}
         </tbody>

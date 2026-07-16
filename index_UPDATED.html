@@ -1,0 +1,1695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Reactivify Lead Console</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { -webkit-tap-highlight-color: transparent; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+<div id="root"></div>
+
+<script id="app-code" type="text/plain">
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+/* ================== CONFIG ================== */
+const API_URL = "https://script.google.com/macros/s/AKfycbxHc_ClWoV_3flhBkTn-TpT1qtXKvTnKX1Htjh_MsKV6IVWKLICio8zF9utA8c4q276/exec";
+
+const OUTCOMES = [
+  "Not Answering","Interested","Not Interested",
+  "Meeting Booked","Schedule Follow-up","Landed","No Show","Dumped"
+];
+// Statuses that mean a meeting/follow-up is CLOSED (out of the pending pipeline)
+const CLOSED_STATUSES = ["Landed","No Show","Not Interested","Dumped"];
+const CONVO_OUTCOMES = ["Interested","Not Interested","Landed"];
+
+// Intern goes "idle" after this long with no activity (mouse/keys/touch/scroll).
+const IDLE_MS = 120000;   // 2 minutes
+
+/* ================== API ================== */
+async function apiGet(action){ const r = await fetch(API_URL + "?action=" + action); return r.json(); }
+async function apiPost(payload){
+  const r = await fetch(API_URL, { method:"POST", headers:{ "Content-Type":"text/plain;charset=utf-8" }, body:JSON.stringify(payload) });
+  return r.json();
+}
+
+/* ================== CSV ================== */
+function parseCSV(text){
+  const rows=[]; let cur=[], field="", inQ=false;
+  for(let i=0;i<text.length;i++){ const c=text[i];
+    if(inQ){ if(c==='"'&&text[i+1]==='"'){field+='"';i++;} else if(c==='"'){inQ=false;} else field+=c; }
+    else { if(c==='"')inQ=true; else if(c===","){cur.push(field);field="";}
+      else if(c==="\n"){cur.push(field);rows.push(cur);cur=[];field="";}
+      else if(c==="\r"){} else field+=c; } }
+  if(field.length||cur.length){cur.push(field);rows.push(cur);}
+  return rows.filter(r=>r.some(x=>String(x).trim()!==""));
+}
+function normHeader(h){ return String(h).toLowerCase().replace(/[_\s]+/g,""); }
+function mapHeaders(headers){
+  const map={};
+  headers.forEach((h,i)=>{ const n=normHeader(h);
+    if(["practicename","title","name","businessname"].includes(n)) map.name=i;
+    else if(["phone","phonenumber","mobile","contact"].includes(n)) map.phone=i;
+    else if(["email","emailaddress"].includes(n)) map.email=i;
+    else if(["city","locality","area","address"].includes(n)&&map.city===undefined) map.city=i;
+    else if(["rating","stars","score"].includes(n)) map.rating=i;
+    else if(["reviews","reviewscount","reviewcount","totalreviews","reviewsnumber"].includes(n)) map.reviews=i;
+    else if(["clinic","clinicname"].includes(n)) map.clinic=i; });
+  return map;
+}
+function csvToLeads(text, cityOverride){
+  const rows=parseCSV(text); if(rows.length<2) return [];
+  const m=mapHeaders(rows[0]);
+  return rows.slice(1).map(r=>({
+    Name: m.name!==undefined?r[m.name]:"",
+    Clinic: m.clinic!==undefined?r[m.clinic]:(m.name!==undefined?r[m.name]:""),
+    Phone: m.phone!==undefined?r[m.phone]:"",
+    Email: m.email!==undefined?r[m.email]:"",
+    City: cityOverride || (m.city!==undefined?r[m.city]:""),
+    Rating: m.rating!==undefined?r[m.rating]:"",
+    Reviews: m.reviews!==undefined?r[m.reviews]:"",
+    Status:"New"
+  })).filter(l=>l.Name||l.Phone);
+}
+
+/* ================== HELPERS ================== */
+function num(v){ const n=parseFloat(String(v).replace(/[^\d.]/g,"")); return isNaN(n)?0:n; }
+function digits(v){ return String(v||"").replace(/\D/g,""); }
+function waNumber(v){ const d=digits(v); return d.length===10?"91"+d:d; }
+function todayISO(){ const d=new Date(); return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }
+function pad2(n){ return String(n).padStart(2,"0"); }
+function nowStamp(){ return new Date().toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"}); }
+// Human duration from seconds: "1h 05m" or "12m 03s".
+function fmtDur(sec){ sec=Math.max(0,Math.floor(sec||0)); const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60; if(h>0) return h+"h "+pad2(m)+"m"; return m+"m "+pad2(s)+"s"; }
+
+// Collapse scraper sub-town / locality names into their major metro.
+const METRO_KEYWORDS = {
+  "Delhi": ["delhi","saket","dwarka","rohini","karol bagh","lajpat","hauz khas","connaught","nehru place","pitampura","janakpuri","vasant","rajouri","preet vihar","mayur vihar","okhla","kalkaji","paschim vihar","shalimar bagh","punjabi bagh","greater kailash"],
+  "Noida": ["noida","greater noida"],
+  "Ghaziabad": ["ghaziabad","indirapuram","vaishali","raj nagar","kaushambi"],
+  "Gurgaon": ["gurgaon","gurugram","dlf","udyog vihar","sohna"],
+  "Faridabad": ["faridabad"],
+  "Mumbai": ["mumbai","bombay","andheri","bandra","borivali","dadar","thane","powai","goregaon","malad","kandivali","juhu","chembur","vashi","navi mumbai","mulund","ghatkopar"],
+  "Bangalore": ["bangalore","bengaluru","koramangala","indiranagar","whitefield","jayanagar","hsr","marathahalli","btm","electronic city","hebbal","yelahanka","rajajinagar","malleshwaram","jp nagar","banashankari"],
+  "Pune": ["pune","hinjewadi","kothrud","hadapsar","viman nagar","wakad","baner","kharadi"],
+  "Hyderabad": ["hyderabad","gachibowli","madhapur","kondapur","hitech","secunderabad","kukatpally","banjara hills","jubilee hills"],
+  "Chennai": ["chennai","adyar","velachery","anna nagar","t nagar","tambaram","porur"],
+  "Kolkata": ["kolkata","salt lake","howrah","behala","new town"]
+};
+const METROS = Object.keys(METRO_KEYWORDS);
+function metroOf(v){
+  const s=String(v||"").trim().toLowerCase();
+  if(!s) return "Unsorted";
+  for(let mi=0; mi<METROS.length; mi++){
+    const metro=METROS[mi];
+    if(METRO_KEYWORDS[metro].some(function(k){ return s.indexOf(k)>=0; })) return metro;
+  }
+  return String(v).trim().replace(/\b\w/g, function(c){ return c.toUpperCase(); });
+}
+function cityGroup(v){ return metroOf(v); }
+
+// Parse a lead's date + time into a local Date (handles YYYY-MM-DD + "18:00"/"6:00 PM")
+function leadDateTime(dateVal, timeVal){
+  if(!dateVal) return null;
+  let d;
+  const md=String(dateVal).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(md) d=new Date(+md[1], +md[2]-1, +md[3]); else { d=new Date(dateVal); if(isNaN(d)) return null; }
+  let hh=0,mm=0;
+  if(timeVal){ const m=String(timeVal).match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+    if(m){ hh=+m[1]; mm=+m[2]; const ap=(m[3]||"").toUpperCase();
+      if(ap==="PM"&&hh<12)hh+=12; if(ap==="AM"&&hh===12)hh=0; } }
+  d.setHours(hh,mm,0,0); return d;
+}
+function fmtCountdown(ms){
+  if(ms<=0) return "now";
+  const m=Math.floor(ms/60000), h=Math.floor(m/60), d=Math.floor(h/24);
+  if(d>0) return d+"d "+(h%24)+"h";
+  if(h>0) return h+"h "+(m%60)+"m";
+  return m+"m";
+}
+function fmtWhen(d){ return d.toLocaleString("en-IN",{weekday:"short",day:"numeric",month:"short",hour:"numeric",minute:"2-digit"}); }
+
+// All upcoming meetings + follow-ups from a set of leads, soonest first.
+function upcomingEvents(leads){
+  const now=Date.now(); const out=[];
+  leads.forEach(l=>{
+    if(/booked/i.test(l.Status||"")){
+      const at=leadDateTime(l["Meeting Date"], l["Meeting Time"]);
+      if(at && at.getTime()>now-60*60000) out.push({when:at,type:"Meeting",lead:l});
+    }
+    if(!/dumped|landed/i.test(l.Status||"")){
+      const fu=leadDateTime(l["Followup Date"], l["Followup Time"]);
+      if(fu && fu.getTime()>now-60*60000) out.push({when:fu,type:"Follow-up",lead:l});
+    }
+  });
+  return out.sort((a,b)=>a.when-b.when);
+}
+
+// Google Calendar "add event" link (manual backup to the auto-booking).
+function gcalStamp(d){ return d.getFullYear()+pad2(d.getMonth()+1)+pad2(d.getDate())+"T"+pad2(d.getHours())+pad2(d.getMinutes())+"00"; }
+function gcalUrl(lead){
+  const at=leadDateTime(lead["Meeting Date"], lead["Meeting Time"]); if(!at) return "";
+  const end=new Date(at.getTime()+30*60000);
+  const text=encodeURIComponent("Reactivify: "+(lead.Clinic||lead.Name||"Meeting"));
+  const details=encodeURIComponent("Phone: "+(lead.Phone||"")+" · Assigned: "+(lead["Assigned To"]||""));
+  return "https://calendar.google.com/calendar/render?action=TEMPLATE&text="+text+"&dates="+gcalStamp(at)+"/"+gcalStamp(end)+"&details="+details;
+}
+
+/* ================== NOTIFICATIONS ================== */
+function useNotifier(events){
+  const fired = useRef({});
+  useEffect(()=>{
+    if(!("Notification" in window)) return;
+    const id=setInterval(()=>{
+      if(Notification.permission!=="granted") return;
+      const now=Date.now();
+      events.forEach(ev=>{
+        const mins=(ev.when.getTime()-now)/60000;
+        [30,15].forEach(th=>{
+          const key=ev.lead.ID+"_"+ev.type+"_"+th;
+          if(mins<=th && mins>th-2 && !fired.current[key]){
+            fired.current[key]=true;
+            try{ new Notification("Reactivify — "+ev.type+" soon", {
+              body:(ev.lead.Clinic||ev.lead.Name||"Lead")+" in ~"+Math.max(1,Math.round(mins))+" min" }); }catch(e){}
+          }
+        });
+      });
+    }, 60000);
+    return ()=>clearInterval(id);
+  }, [events]);
+}
+
+/* ================== WORK SESSION (clock-in / idle / logout) ==================
+ * Tracks an intern's shift: they clock in on login, we watch for 2 min of
+ * inactivity (idle), they resume by tapping "Back to dialing", and we clock
+ * them out on logout. Per-second counters live in refs (no re-render); only
+ * the phase (working/idle) is React state. The backend just records the
+ * timestamps so the admin can see who was online when.
+ * ========================================================================== */
+function useWorkSession(user, enabled){
+  const sidRef = useRef(null);
+  const [phase,setPhase] = useState("pending");      // pending | working | idle
+  const phaseRef = useRef("pending");
+  const workRef = useRef(0), idleRef = useRef(0);
+  const lastActRef = useRef(Date.now());
+  useEffect(()=>{ phaseRef.current = phase; },[phase]);
+
+  // Reset everything when the session is disabled (admin / logged out).
+  useEffect(()=>{
+    if(!enabled){ sidRef.current=null; workRef.current=0; idleRef.current=0; lastActRef.current=Date.now(); setPhase("pending"); }
+  },[enabled,user]);
+
+  const start = useCallback(async ()=>{
+    const sid = "S"+Date.now()+"_"+Math.floor(Math.random()*1000);
+    sidRef.current = sid;
+    workRef.current=0; idleRef.current=0; lastActRef.current=Date.now();
+    setPhase("working");
+    try{ await apiPost({action:"sessionStart", sid, intern:user}); }catch(e){}
+  },[user]);
+
+  const resume = useCallback(async ()=>{
+    lastActRef.current=Date.now();
+    setPhase("working");
+    try{ await apiPost({action:"sessionPing", sid:sidRef.current, intern:user, status:"Working", workSec:workRef.current, idleSec:idleRef.current}); }catch(e){}
+  },[user]);
+
+  const end = useCallback(async (extra)=>{
+    try{ await apiPost(Object.assign({action:"sessionEnd", sid:sidRef.current, intern:user, workSec:workRef.current, idleSec:idleRef.current}, extra||{})); }catch(e){}
+  },[user]);
+
+  // Activity resets the idle timer — but ONLY while working. Once idle, the
+  // intern must explicitly tap "Back to dialing" (activity alone won't resume).
+  useEffect(()=>{
+    if(!enabled) return;
+    const onAct=()=>{ if(phaseRef.current==="working") lastActRef.current=Date.now(); };
+    const evs=["mousedown","keydown","touchstart","pointerdown","scroll"];
+    evs.forEach(e=>window.addEventListener(e,onAct,{passive:true}));
+    return ()=>evs.forEach(e=>window.removeEventListener(e,onAct));
+  },[enabled]);
+
+  // 1-second heartbeat: accumulate work/idle seconds (refs, no re-render) and
+  // flip to idle after IDLE_MS of no activity.
+  useEffect(()=>{
+    if(!enabled) return;
+    const id=setInterval(()=>{
+      const p=phaseRef.current;
+      if(p==="working"){ workRef.current++; if(Date.now()-lastActRef.current>IDLE_MS) setPhase("idle"); }
+      else if(p==="idle"){ idleRef.current++; }
+    },1000);
+    return ()=>clearInterval(id);
+  },[enabled]);
+
+  // Tell the server the moment we flip to idle.
+  useEffect(()=>{
+    if(!enabled || !sidRef.current) return;
+    if(phase==="idle"){ apiPost({action:"sessionPing", sid:sidRef.current, intern:user, status:"Idle", workSec:workRef.current, idleSec:idleRef.current}).catch(()=>{}); }
+  },[phase]);
+
+  // 60s heartbeat so the admin dashboard sees a live "last active".
+  useEffect(()=>{
+    if(!enabled) return;
+    const id=setInterval(()=>{
+      if(!sidRef.current) return;
+      apiPost({action:"sessionPing", sid:sidRef.current, intern:user, status: phaseRef.current==="idle"?"Idle":"Working", workSec:workRef.current, idleSec:idleRef.current}).catch(()=>{});
+    },120000);
+    return ()=>clearInterval(id);
+  },[enabled,user]);
+
+  return { phase, start, resume, end, workRef, idleRef };
+}
+
+/* ================== ROOT ================== */
+function App(){
+  const [user,setUser]=useState(null);
+  const [leads,setLeads]=useState([]);
+  const [interns,setInterns]=useState(()=>{ try{ const c=localStorage.getItem("reactivify_interns"); return c?JSON.parse(c):[]; }catch(e){ return []; } });
+  const [stats,setStats]=useState({});
+  const [sessions,setSessions]=useState([]);
+  const [loading,setLoading]=useState(false);
+  const [toast,setToast]=useState("");
+  const [logoutOpen,setLogoutOpen]=useState(false);
+  const [notifPerm,setNotifPerm]=useState(("Notification" in window)?Notification.permission:"unsupported");
+
+  const configMissing = API_URL.indexOf("PASTE_YOUR")===0;
+  const notify=(m)=>{ setToast(m); setTimeout(()=>setToast(""),2800); };
+
+  // Intern work-session (clock-in / idle / logout). Inert for admin & logged-out.
+  const session = useWorkSession(user||"", !!user && user!=="Team");
+
+  const refresh=useCallback(async()=>{
+    if(configMissing) return;
+    setLoading(true);
+    try{
+      // Speed: fire all three loads in PARALLEL (was sequential = ~3x the wait).
+      const [l,st,se]=await Promise.all([apiGet("list"),apiGet("getStats"),apiGet("getSessions")]);
+      if(l.ok){ setLeads(l.leads||[]); setInterns(l.interns||[]);
+        try{ localStorage.setItem("reactivify_interns", JSON.stringify(l.interns||[])); }catch(e){} }
+      if(st.ok) setStats(st.stats||{});
+      if(se.ok) setSessions(se.sessions||[]);
+    }
+    catch(e){ notify("Load failed: "+e); }
+    setLoading(false);
+  },[configMissing]);
+
+  useEffect(()=>{ if(user) refresh(); },[user,refresh]);
+  // keep data fresh so countdowns/notifications stay accurate
+  useEffect(()=>{ if(!user) return; const id=setInterval(refresh,120000); return ()=>clearInterval(id); },[user,refresh]);
+
+  function askNotif(){
+    if(!("Notification" in window)) return;
+    Notification.requestPermission().then(p=>setNotifPerm(p));
+  }
+  useEffect(()=>{ if(user && notifPerm==="default") askNotif(); },[user]);
+
+  async function finishLogout(summary){
+    await session.end(Object.assign({reconciled:true}, summary||{}));
+    setLogoutOpen(false);
+    setUser(null);
+  }
+
+  if(!user) return <Login interns={interns} onPick={setUser} onNeedInterns={refresh} configMissing={configMissing}/>;
+
+  const isAdmin = user==="Team";
+
+  // Interns must clock in before they get their queue.
+  if(!isAdmin && session.phase==="pending")
+    return <StartShift user={user} onStart={session.start} onCancel={()=>setUser(null)}/>;
+
+  const myLeads = isAdmin ? leads : leads.filter(l=>String(l["Assigned To"]||"").trim().toLowerCase()===String(user).toLowerCase());
+  const events = upcomingEvents(myLeads);
+
+  return (
+    <div className="min-h-screen">
+      <Header user={user} isAdmin={isAdmin} session={session}
+        onSwitch={()=>{ if(isAdmin) setUser(null); else setLogoutOpen(true); }} onRefresh={refresh}
+        loading={loading} notifPerm={notifPerm} onEnableNotif={askNotif}/>
+      {configMissing &&
+        <div className="bg-amber-100 text-amber-900 text-sm px-4 py-2 text-center">⚠ API_URL not set.</div>}
+      <NotifierMount events={events}/>
+      <CountdownPill events={events}/>
+      {isAdmin
+        ? <AdminView leads={leads} interns={interns} stats={stats} sessions={sessions} refresh={refresh} notify={notify}/>
+        : <InternView user={user} leads={leads} stats={stats} refresh={refresh} notify={notify}/>}
+      {!isAdmin && session.phase==="idle" &&
+        <IdleOverlay session={session} onResume={session.resume} onLogout={()=>setLogoutOpen(true)}/>}
+      {logoutOpen &&
+        <LogoutModal user={user} onCancel={()=>setLogoutOpen(false)} onLoggedOut={finishLogout} notify={notify}/>}
+      {toast && <Toast msg={toast}/>}
+    </div>
+  );
+}
+function NotifierMount({events}){ useNotifier(events); return null; }
+
+function Toast({msg}){ return <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-full shadow-lg z-50">{msg}</div>; }
+
+/* ================== WORK STATUS BADGE ================== */
+function WorkStatusBadge({session}){
+  const [,setTick]=useState(0);
+  useEffect(()=>{ const id=setInterval(()=>setTick(t=>t+1),1000); return ()=>clearInterval(id); },[]);
+  if(!session || session.phase==="pending") return null;
+  const working=session.phase==="working";
+  return (
+    <span className={"flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full "+(working?"bg-green-100 text-green-700":"bg-amber-100 text-amber-700")}>
+      <span className={"w-2 h-2 rounded-full "+(working?"bg-green-500 animate-pulse":"bg-amber-500")}></span>
+      {working?"Dialing":"Idle"} · {fmtDur(session.workRef.current)}
+    </span>
+  );
+}
+
+function Header({user,isAdmin,session,onSwitch,onRefresh,loading,notifPerm,onEnableNotif}){
+  return (
+    <div className="sticky top-0 z-40 bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between">
+      <div className="flex items-center gap-2">
+        <span className="text-lg font-bold text-indigo-600">Reactivify</span>
+        <span className="text-xs bg-slate-100 px-2 py-0.5 rounded-full">{isAdmin?"Admin":"Intern"}: {user}</span>
+        {!isAdmin && <WorkStatusBadge session={session}/>}
+      </div>
+      <div className="flex items-center gap-2">
+        {notifPerm!=="granted" && notifPerm!=="unsupported" &&
+          <button onClick={onEnableNotif} className="text-sm px-3 py-1.5 rounded-lg bg-amber-100 text-amber-800">🔔 Enable alerts</button>}
+        <button onClick={onRefresh} className="text-sm px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200">{loading?"…":"↻"}</button>
+        <button onClick={onSwitch} className="text-sm px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200">{isAdmin?"Switch":"Log out"}</button>
+      </div>
+    </div>
+  );
+}
+
+/* ================== START SHIFT (intern clock-in) ================== */
+function StartShift({user,onStart,onCancel}){
+  const [busy,setBusy]=useState(false);
+  async function go(){ setBusy(true); await onStart(); /* App re-renders into the queue */ }
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center px-6 text-center">
+      <div className="text-3xl font-bold text-indigo-600 mb-1">Reactivify</div>
+      <div className="text-slate-500 mb-8">Hi {user} 👋 — ready to start your shift?</div>
+      <button onClick={go} disabled={busy}
+        className="px-10 py-5 rounded-2xl bg-green-600 text-white text-xl font-bold shadow-sm disabled:opacity-40">
+        {busy?"Starting…":"▶ Start dialing"}
+      </button>
+      <div className="text-xs text-slate-400 mt-6 max-w-xs">
+        Your work time starts now. If you're inactive for 2 minutes you'll be marked <b>Idle</b> until you tap back in.
+      </div>
+      <button onClick={onCancel} className="text-xs text-slate-400 mt-8 underline">Not you? Switch user</button>
+    </div>
+  );
+}
+
+/* ================== IDLE OVERLAY ================== */
+function IdleOverlay({session,onResume,onLogout}){
+  const [,setTick]=useState(0);
+  useEffect(()=>{ const id=setInterval(()=>setTick(t=>t+1),1000); return ()=>clearInterval(id); },[]);
+  return (
+    <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center z-[60] p-6">
+      <div className="bg-white rounded-3xl p-8 max-w-sm w-full text-center space-y-4 shadow-2xl">
+        <div className="text-5xl">😴</div>
+        <div className="text-xl font-bold">You've gone idle</div>
+        <div className="text-slate-500 text-sm">No activity for 2 minutes. Idle time so far: <b>{fmtDur(session.idleRef.current)}</b>. Tap below when you're back on the phones.</div>
+        <button onClick={onResume} className="w-full py-4 rounded-2xl bg-green-600 text-white text-lg font-bold">▶ Back to dialing</button>
+        <button onClick={onLogout} className="text-xs text-slate-400 underline">Done for now — log out</button>
+      </div>
+    </div>
+  );
+}
+
+/* ================== LOGOUT RECONCILIATION ==================
+ * Hard-blocks logout until every answered call from today either has a
+ * recording (interns upload into their name/date Drive subfolder, then hit
+ * re-check) or is marked "recording doesn't exist" with a written reason.
+ * ========================================================================== */
+function LogoutModal({user,onCancel,onLoggedOut,notify}){
+  const [state,setState]=useState("checking");   // checking | result | error
+  const [data,setData]=useState(null);
+  const [reasonFor,setReasonFor]=useState(null);  // lead id currently being explained
+  const [reason,setReason]=useState("");
+  const [busy,setBusy]=useState(false);
+
+  const runCheck=useCallback(async()=>{
+    setState("checking");
+    try{
+      const res=await apiPost({action:"reconcile", intern:user});
+      if(res.ok){ setData(res); setState("result"); }
+      else { setData({error:res.error, missing:[], convos:0, recordings:0}); setState("error"); }
+    }catch(e){ setData({error:String(e), missing:[], convos:0, recordings:0}); setState("error"); }
+  },[user]);
+  useEffect(()=>{ runCheck(); },[runCheck]);
+
+  async function saveNoRecording(id){
+    if(!reason.trim()){ notify("Please write a short reason first"); return; }
+    setBusy(true);
+    const res=await apiPost({action:"markNoRecording", id, reason:reason.trim(), intern:user});
+    setBusy(false);
+    if(res.ok){ setReasonFor(null); setReason(""); runCheck(); }
+    else notify("Failed: "+(res.error||"try again"));
+  }
+
+  const missing = data ? (data.missing||[]) : [];
+  const clear = state==="result" && missing.length===0;
+
+  async function doLogout(){
+    setBusy(true);
+    await onLoggedOut({convos: data?data.convos:0, recordings: data?data.recordings:0,
+      notes: data?("convos "+data.convos+" / recordings "+data.recordings):""});
+    // parent unmounts this modal
+  }
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center z-[70] p-4">
+      <div className="bg-white rounded-3xl w-full max-w-md max-h-[88vh] overflow-y-auto no-scrollbar p-5 space-y-3 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <div className="text-lg font-bold">Before you log out</div>
+          <button onClick={onCancel} className="text-slate-400 text-xl leading-none">✕</button>
+        </div>
+
+        {state==="checking" &&
+          <div className="py-10 text-center text-slate-500">
+            <div className="text-4xl mb-3 animate-pulse">🔎</div>
+            Checking your Drive recordings & matching today's calls…
+          </div>}
+
+        {state==="error" &&
+          <div className="space-y-3">
+            <div className="bg-red-50 text-red-700 text-sm rounded-xl p-3">⚠ {data&&data.error?data.error:"Check failed."}</div>
+            <button onClick={runCheck} className="w-full py-2.5 rounded-xl bg-slate-100 text-sm">Try again</button>
+          </div>}
+
+        {(state==="result") && <React.Fragment>
+          <div className="flex gap-2 text-center">
+            <div className="flex-1 bg-slate-50 rounded-xl py-2">
+              <div className="text-2xl font-bold">{data.convos}</div>
+              <div className="text-[10px] uppercase text-slate-400">Answered calls today</div>
+            </div>
+            <div className="flex-1 bg-slate-50 rounded-xl py-2">
+              <div className={"text-2xl font-bold "+(clear?"text-green-600":"text-amber-600")}>{data.recordings}</div>
+              <div className="text-[10px] uppercase text-slate-400">Accounted for</div>
+            </div>
+            <div className="flex-1 bg-slate-50 rounded-xl py-2">
+              <div className={"text-2xl font-bold "+(missing.length?"text-red-600":"text-green-600")}>{missing.length}</div>
+              <div className="text-[10px] uppercase text-slate-400">Missing</div>
+            </div>
+          </div>
+
+          {typeof data.unmatched==="number" && data.unmatched>0 &&
+            <div className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-3 py-2">
+              ⚠ {data.unmatched} recording file(s) in Drive didn't match any lead — check the phone number in the filename (misaligned upload).
+            </div>}
+
+          {clear
+            ? <div className="bg-green-50 text-green-800 rounded-xl p-4 text-center text-sm">
+                ✓ All of today's calls have a recording (or a logged reason). You're good to go.
+              </div>
+            : <div className="space-y-2">
+                <div className="text-sm text-slate-600">These clinics had a call today but <b>no recording</b>. Upload the recording into your Drive folder and tap re-check, or mark that it doesn't exist:</div>
+                <button onClick={runCheck} disabled={busy} className="w-full py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold disabled:opacity-40">🔁 I've uploaded — re-check</button>
+                {missing.map(m=>(
+                  <div key={m.id} className="border border-slate-200 rounded-xl p-3">
+                    <div className="font-medium text-sm">{m.clinic}</div>
+                    <div className="text-[11px] text-slate-400">{m.phone||"no phone"}{m.name?" · Dr. "+m.name:""}</div>
+                    {reasonFor===m.id
+                      ? <div className="mt-2 space-y-2">
+                          <textarea value={reason} onChange={e=>setReason(e.target.value)} rows={2}
+                            placeholder="Why is there no recording? (e.g. recorder didn't start, call dropped, wrong number…)"
+                            className="w-full border rounded-lg px-3 py-2 text-sm"/>
+                          <div className="flex gap-2">
+                            <button onClick={()=>saveNoRecording(m.id)} disabled={busy} className="flex-1 py-2 rounded-lg bg-slate-800 text-white text-sm disabled:opacity-40">{busy?"Saving…":"Save reason"}</button>
+                            <button onClick={()=>{setReasonFor(null);setReason("");}} className="px-3 py-2 rounded-lg bg-white border text-sm">Cancel</button>
+                          </div>
+                        </div>
+                      : <button onClick={()=>{setReasonFor(m.id);setReason("");}} className="mt-2 text-xs px-3 py-1.5 rounded-lg bg-red-50 text-red-600">Recording doesn't exist →</button>}
+                  </div>
+                ))}
+              </div>}
+
+          <div className="flex gap-2 pt-1">
+            <button onClick={doLogout} disabled={!clear||busy}
+              className="flex-1 py-3 rounded-xl bg-green-600 text-white font-semibold disabled:opacity-40">
+              {clear?"✓ Log out":"Resolve all to log out"}
+            </button>
+            <button onClick={onCancel} className="px-4 py-3 rounded-xl bg-white border text-sm">Keep working</button>
+          </div>
+        </React.Fragment>}
+      </div>
+    </div>
+  );
+}
+
+/* ================== COUNTDOWN PILL ================== */
+function CountdownPill({events}){
+  const [,setTick]=useState(0);
+  useEffect(()=>{ const id=setInterval(()=>setTick(t=>t+1),30000); return ()=>clearInterval(id); },[]);
+  if(!events.length) return null;
+  const next=events[0];
+  const ms=next.when.getTime()-Date.now();
+  const soon=ms<30*60000;
+  return (
+    <div className={"px-4 py-2 text-sm text-center "+(soon?"bg-red-600 text-white":"bg-indigo-600 text-white")}>
+      ⏱ Next {next.type.toLowerCase()}: <b>{next.lead.Clinic||next.lead.Name}</b> — {fmtWhen(next.when)} · in <b>{fmtCountdown(ms)}</b>
+      {events.length>1 && <span className="opacity-80"> · +{events.length-1} more</span>}
+    </div>
+  );
+}
+
+/* ================== LOGIN ================== */
+function Login({interns,onPick,onNeedInterns,configMissing}){
+  useEffect(()=>{ if(!configMissing) onNeedInterns(); },[]);
+  const list = ["Team", ...interns.map(i=>i.name)];
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center px-6">
+      <div className="text-3xl font-bold text-indigo-600 mb-1">Reactivify</div>
+      <div className="text-slate-500 mb-8">Lead Console — pick your name</div>
+      <div className="grid grid-cols-2 gap-3 w-full max-w-sm">
+        {list.map(n=>(
+          <button key={n} onClick={()=>onPick(n)}
+            className={"py-4 rounded-2xl font-semibold shadow-sm border "+(n==="Team"?"bg-indigo-600 text-white border-indigo-600":"bg-white border-slate-200 hover:border-indigo-400")}>
+            {n}{n==="Team" && <div className="text-xs font-normal opacity-80">Admin</div>}
+          </button>
+        ))}
+      </div>
+      {interns.length===0 && <div className="text-xs text-slate-400 mt-4">Loading team…</div>}
+    </div>
+  );
+}
+
+/* ============ QUICK SCHEDULE (book meeting / follow-up) ============ */
+function QuickSchedule({leads,user,refresh,notify}){
+  const [open,setOpen]=useState(false);
+  const [q,setQ]=useState("");
+  const [leadId,setLeadId]=useState("");
+  const [manualLead,setManualLead]=useState(null);
+  const [creating,setCreating]=useState(false);
+  const [nc,setNc]=useState({clinic:"",name:"",phone:"",email:""});
+  const [kind,setKind]=useState("meeting");            // meeting | followup
+  const [dt,setDt]=useState({date:todayISO(),time:"11:00"});
+  const [email,setEmail]=useState("");
+  const [saving,setSaving]=useState(false);
+
+  const matches = (q.trim()
+    ? leads.filter(l=>((l.Clinic||"")+" "+(l.Name||"")+" "+(l.Phone||"")+" "+(l.City||"")).toLowerCase().indexOf(q.trim().toLowerCase())>=0)
+    : leads).slice(0,25);
+  const sel = leads.find(l=>String(l.ID)===String(leadId)) || (manualLead && String(manualLead.ID)===String(leadId) ? manualLead : null);
+
+  function reset(){ setLeadId(""); setManualLead(null); setCreating(false); setQ(""); setNc({clinic:"",name:"",phone:"",email:""}); setEmail(""); }
+
+  async function createLead(){
+    if(!nc.clinic.trim() && !nc.name.trim()){ notify("Enter a clinic or doctor name"); return; }
+    setSaving(true);
+    const lead={Clinic:nc.clinic.trim(), Name:nc.name.trim(), Phone:nc.phone.trim(), Email:nc.email.trim(), Status:"New", "Assigned To": (user==="Team"?"Team":user)};
+    const res=await apiPost({action:"upsert", lead});
+    setSaving(false);
+    if(res.ok && res.lead){ setManualLead(res.lead); setLeadId(res.lead.ID); setEmail(res.lead.Email||""); setCreating(false); refresh(); }
+    else notify("Create failed: "+(res.error||"unknown"));
+  }
+
+  async function save(){
+    if(!leadId){ notify("Pick or create a lead first"); return; }
+    setSaving(true);
+    const patch = kind==="meeting"
+      ? {ID:leadId, Email:email, Status:"Meeting Booked", "Meeting Date":dt.date, "Meeting Time":dt.time}
+      : {ID:leadId, Email:email, Status:"Schedule Follow-up", "Followup Date":dt.date, "Followup Time":dt.time, "Followup Sent":""};
+    const res=await apiPost({action:"upsert", lead:patch});
+    setSaving(false);
+    if(res.ok){ notify(kind==="meeting"?"Meeting booked ✓":"Follow-up scheduled ✓"); setOpen(false); reset(); refresh(); }
+    else notify("Failed: "+res.error);
+  }
+
+  if(!open) return <button onClick={()=>setOpen(true)} className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium">＋ Book meeting / follow-up</button>;
+  return (
+    <div className="bg-white rounded-2xl border border-indigo-200 p-4 space-y-3 shadow-sm">
+      <div className="flex items-center justify-between">
+        <div className="font-semibold">Log a meeting or follow-up</div>
+        <button onClick={()=>{setOpen(false);reset();}} className="text-slate-400 text-lg leading-none">✕</button>
+      </div>
+      <div className="flex gap-1 bg-slate-100 rounded-full p-1 w-max">
+        <button onClick={()=>setKind("meeting")} className={"px-3 py-1 rounded-full text-sm "+(kind==="meeting"?"bg-white shadow":"")}>Meeting</button>
+        <button onClick={()=>setKind("followup")} className={"px-3 py-1 rounded-full text-sm "+(kind==="followup"?"bg-white shadow":"")}>Follow-up</button>
+      </div>
+
+      {sel
+        ? <div className="flex items-center justify-between bg-slate-50 rounded-lg px-3 py-2">
+            <div><div className="font-medium text-sm">{sel.Clinic||sel.Name}</div><div className="text-xs text-slate-400">{sel.Phone} · {sel.City||""}</div></div>
+            <button onClick={reset} className="text-xs text-indigo-600">change</button>
+          </div>
+        : creating
+          ? <div className="space-y-2 border rounded-lg p-3 bg-slate-50">
+              <div className="text-sm font-medium">New clinic</div>
+              <input value={nc.clinic} onChange={e=>setNc({...nc,clinic:e.target.value})} placeholder="Clinic name" className="w-full border rounded-lg px-3 py-2 text-sm"/>
+              <input value={nc.name} onChange={e=>setNc({...nc,name:e.target.value})} placeholder="Doctor name" className="w-full border rounded-lg px-3 py-2 text-sm"/>
+              <input value={nc.phone} onChange={e=>setNc({...nc,phone:e.target.value})} placeholder="Phone number (e.g. 98765 43210)" className="w-full border rounded-lg px-3 py-2 text-sm"/>
+              <input type="email" value={nc.email} onChange={e=>setNc({...nc,email:e.target.value})} placeholder="Doctor email" className="w-full border rounded-lg px-3 py-2 text-sm"/>
+              <div className="flex gap-2">
+                <button onClick={createLead} disabled={saving} className="flex-1 py-2 rounded-lg bg-indigo-600 text-white text-sm disabled:opacity-40">{saving?"Creating…":"Create & select"}</button>
+                <button onClick={()=>setCreating(false)} className="px-3 py-2 rounded-lg bg-white border text-sm">Cancel</button>
+              </div>
+            </div>
+          : <div>
+              <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search a lead by clinic / name / phone" className="w-full border rounded-lg px-3 py-2 text-sm"/>
+              <div className="mt-1 max-h-52 overflow-y-auto no-scrollbar border rounded-lg divide-y divide-slate-100">
+                {matches.map(l=>(
+                  <button key={l.ID} onClick={()=>{setLeadId(l.ID);setEmail(l.Email||"");}} className="w-full text-left px-3 py-2 hover:bg-slate-50">
+                    <div className="font-medium text-sm">{l.Clinic||l.Name}</div>
+                    <div className="text-xs text-slate-400">{l.Phone} · {l.City} · {l["Assigned To"]||"unassigned"}</div>
+                  </button>
+                ))}
+                {matches.length===0 && <div className="px-3 py-2 text-sm text-slate-400">No matching leads — create it below.</div>}
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1">{leads.length} leads · type to search all of them</div>
+              <button onClick={()=>{setCreating(true);setNc({clinic:q,name:"",phone:"",email:""});}} className="mt-2 w-full py-2 rounded-lg border border-dashed border-indigo-300 text-indigo-600 text-sm font-medium">＋ Create new clinic</button>
+            </div>}
+
+      {sel &&
+        <div>
+          <label className="text-xs font-medium text-slate-600">Doctor email <span className="text-red-500">*required</span></label>
+          <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="doctor@clinic.com"
+            className={"w-full border rounded-lg px-3 py-2 text-sm "+(email?"border-slate-200":"border-red-300 bg-red-50")}/>
+          <div className="text-[11px] text-slate-400 mt-0.5">Needed to send the doctor the meeting link — you can still save without it.</div>
+        </div>}
+
+      {sel &&
+        <div className="flex gap-2">
+          <input type="date" value={dt.date} onChange={e=>setDt({...dt,date:e.target.value})} className="border rounded-lg px-2 py-1 text-sm flex-1"/>
+          <input type="time" value={dt.time} onChange={e=>setDt({...dt,time:e.target.value})} className="border rounded-lg px-2 py-1 text-sm flex-1"/>
+        </div>}
+      {sel &&
+        <button onClick={save} disabled={saving||!leadId} className="w-full py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-40">
+          {saving?"Saving…":(kind==="meeting"?"Book meeting":"Schedule follow-up")}
+        </button>}
+    </div>
+  );
+}
+
+/* ============ CALL RECORDINGS + AI COACHING ============ */
+function RecordingsPanel({notify,refresh}){
+  const [busy,setBusy]=useState("");
+  const [msg,setMsg]=useState("");
+  async function sync(){
+    setBusy("sync"); setMsg("Scanning Drive…");
+    const res=await apiPost({action:"attachRecordings"});
+    setBusy("");
+    if(res.ok&&!res.error){ setMsg("✓ Attached "+res.attached+" recording link(s) · scanned "+res.scanned+" file(s) · "+res.unmatched+" unmatched"); refresh(); }
+    else setMsg("⚠ "+(res.error||"Failed — check the Drive folder is shared with the tool's account."));
+  }
+  async function coach(){
+    setBusy("coach"); setMsg("Transcribing & coaching today's calls… this can take a minute.");
+    const res=await apiPost({action:"coachCalls", onlyToday:true});
+    setBusy("");
+    if(res.ok&&!res.error){ setMsg("✓ Coached "+res.coached+" call(s)"+(res.remaining?(" · "+res.remaining+" left, press again"):"")+(res.errors?(" · "+res.errors+" errors"):"")); refresh(); }
+    else setMsg("⚠ "+(res.error||"Failed"));
+  }
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-4 space-y-2">
+      <div className="font-semibold">🎧 Call recordings & AI coaching</div>
+      <div className="text-[11px] text-slate-400">Sync pulls recordings from your Drive folder (incl. each intern's name/date subfolders) onto matching leads by phone number. Coach transcribes + scores today's calls with AI.</div>
+      <div className="flex flex-wrap gap-2 pt-1">
+        <button onClick={sync} disabled={!!busy} className="px-3 py-1.5 rounded-lg bg-slate-100 text-sm disabled:opacity-40">{busy==="sync"?"Syncing…":"🔗 Sync recordings"}</button>
+        <button onClick={coach} disabled={!!busy} className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm disabled:opacity-40">{busy==="coach"?"Coaching…":"🎯 Coach today's calls"}</button>
+      </div>
+      {msg && <div className="text-sm text-slate-600">{msg}</div>}
+    </div>
+  );
+}
+
+/* ============ CLOSING PIPELINE (meetings / follow-ups) ============ */
+function isClosed_(status){ return CLOSED_STATUSES.some(function(s){ return String(status||"").toLowerCase()===s.toLowerCase(); }); }
+
+function pipelineEvents(leads){
+  const out=[];
+  leads.forEach(function(l){
+    if(/^meeting booked$/i.test(l.Status||"")){ const at=leadDateTime(l["Meeting Date"],l["Meeting Time"]); if(at) out.push({lead:l,type:"Meeting",when:at}); }
+    if(/^schedule follow-up$/i.test(l.Status||"")){ const at=leadDateTime(l["Followup Date"],l["Followup Time"]); if(at) out.push({lead:l,type:"Follow-up",when:at}); }
+  });
+  return out;
+}
+
+function CloseItem({item,refresh,notify}){
+  const l=item.lead;
+  const [busy,setBusy]=useState(false);
+  const [resched,setResched]=useState(false);
+  const [dt,setDt]=useState({date:todayISO(),time:"11:00"});
+  const overdueHrs=(Date.now()-item.when.getTime())/3600000;
+  async function closeAs(status){
+    if(!status) return;
+    setBusy(true);
+    const res=await apiPost({action:"upsert", lead:{ID:l.ID, Status:status}, logStat:{intern:l["Assigned To"]||"", outcome:status}});
+    setBusy(false); if(res.ok){ notify("Closed: "+status); refresh(); } else notify("Failed: "+res.error);
+  }
+  async function saveResched(){
+    setBusy(true);
+    const extra=item.type==="Meeting"
+      ? {Status:"Meeting Booked","Meeting Date":dt.date,"Meeting Time":dt.time,"DayBefore Sent":"","1Hr Sent":"","30Min Sent":""}
+      : {Status:"Schedule Follow-up","Followup Date":dt.date,"Followup Time":dt.time,"Followup Sent":""};
+    const res=await apiPost({action:"upsert", lead:Object.assign({ID:l.ID},extra)});
+    setBusy(false); setResched(false); if(res.ok){ notify("Rescheduled"); refresh(); } else notify("Failed");
+  }
+  async function cancelIt(){
+    if(!confirm("Delete this "+item.type.toLowerCase()+"? It will be removed from the pipeline and the calendar (the lead stays).")) return;
+    setBusy(true);
+    const extra=item.type==="Meeting"
+      ? {Status:"Interested","Meeting Date":"","Meeting Time":""}
+      : {Status:"Interested","Followup Date":"","Followup Time":"","Followup Sent":""};
+    const res=await apiPost({action:"upsert", lead:Object.assign({ID:l.ID},extra)});
+    setBusy(false); if(res.ok){ notify("Deleted"); refresh(); } else notify("Failed");
+  }
+  return (
+    <div className="border-t border-slate-100 py-2 first:border-0">
+      <div className="text-sm">
+        <span className={"px-2 py-0.5 rounded-full text-xs mr-2 "+(item.type==="Meeting"?"bg-green-100 text-green-700":"bg-amber-100 text-amber-700")}>{item.type}</span>
+        <b>{l.Clinic||l.Name}</b>
+        <span className="text-slate-400"> · {fmtWhen(item.when)} · {l["Assigned To"]||"unassigned"}</span>
+        {overdueHrs>2 && <span className="ml-2 text-red-500 text-xs">no-show risk</span>}
+      </div>
+      {!resched
+        ? <div className="flex flex-wrap gap-2 mt-1 items-center">
+            {l.Phone && <a href={"tel:"+digits(l.Phone)} className="px-2 py-1 rounded-lg bg-green-600 text-white text-xs">📞 Call</a>}
+            <select disabled={busy} value="" onChange={e=>closeAs(e.target.value)} className="border rounded-lg px-2 py-1 text-sm">
+              <option value="">Close as…</option>
+              <option>Landed</option><option>No Show</option><option>Interested</option><option>Not Interested</option><option>Dumped</option>
+            </select>
+            <button onClick={()=>setResched(true)} className="px-2 py-1 rounded-lg bg-slate-100 text-sm">Reschedule</button>
+            <button onClick={cancelIt} disabled={busy} className="px-2 py-1 rounded-lg bg-red-50 text-red-600 text-sm">✕ Delete</button>
+          </div>
+        : <div className="flex flex-wrap gap-2 mt-1 items-center">
+            <input type="date" value={dt.date} onChange={e=>setDt({...dt,date:e.target.value})} className="border rounded-lg px-2 py-1 text-sm"/>
+            <input type="time" value={dt.time} onChange={e=>setDt({...dt,time:e.target.value})} className="border rounded-lg px-2 py-1 text-sm"/>
+            <button onClick={saveResched} disabled={busy} className="px-2 py-1 rounded-lg bg-indigo-600 text-white text-sm">Save</button>
+            <button onClick={()=>setResched(false)} className="px-2 py-1 rounded-lg bg-white border text-sm">Cancel</button>
+          </div>}
+    </div>
+  );
+}
+
+function MeetingsPipeline({leads,refresh,notify}){
+  const [,setTick]=useState(0);
+  useEffect(()=>{ const id=setInterval(()=>setTick(t=>t+1),60000); return ()=>clearInterval(id); },[]);
+  const now=Date.now();
+  const all=pipelineEvents(leads);
+  const due=all.filter(e=>e.when.getTime()<=now).sort((a,b)=>a.when-b.when);
+  const up=all.filter(e=>e.when.getTime()>now).sort((a,b)=>a.when-b.when);
+  async function cancelEvent(e){
+    if(!confirm("Delete this "+e.type.toLowerCase()+" for "+(e.lead.Clinic||e.lead.Name)+"?")) return;
+    const extra=e.type==="Meeting"?{Status:"Interested","Meeting Date":"","Meeting Time":""}:{Status:"Interested","Followup Date":"","Followup Time":"","Followup Sent":""};
+    const res=await apiPost({action:"upsert", lead:Object.assign({ID:e.lead.ID},extra)});
+    if(res.ok){ notify("Deleted"); refresh(); } else notify("Failed");
+  }
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <div className="font-semibold mb-1">🔴 Needs closing ({due.length})</div>
+        <div className="text-[11px] text-slate-400 mb-2">Meetings & follow-ups whose time has passed but aren’t closed yet. Close each with an outcome (or reschedule) so nothing sits in limbo.</div>
+        {due.length===0
+          ? <div className="text-sm text-slate-400">Nothing waiting to be closed. 🎉</div>
+          : due.map((e,i)=><CloseItem key={(e.lead.ID||i)+"_"+e.type} item={e} refresh={refresh} notify={notify}/>)}
+      </div>
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <div className="font-semibold mb-2">📅 Upcoming ({up.length})</div>
+        {up.length===0
+          ? <div className="text-sm text-slate-400">No upcoming meetings or follow-ups.</div>
+          : up.map((e,i)=>(
+              <div key={(e.lead.ID||i)+"_"+e.type} className="flex items-center justify-between text-sm border-t border-slate-100 py-2 first:border-0">
+                <div>
+                  <span className={"px-2 py-0.5 rounded-full text-xs mr-2 "+(e.type==="Meeting"?"bg-green-100 text-green-700":"bg-amber-100 text-amber-700")}>{e.type}</span>
+                  <b>{e.lead.Clinic||e.lead.Name}</b> <span className="text-slate-400">· {e.lead["Assigned To"]||""}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-slate-500">{fmtWhen(e.when)} · <b className={e.when.getTime()-now<30*60000?"text-red-600":""}>{fmtCountdown(e.when.getTime()-now)}</b></span>
+                  <button onClick={()=>cancelEvent(e)} className="text-red-400 hover:text-red-600 text-xs">✕</button>
+                </div>
+              </div>
+            ))}
+      </div>
+    </div>
+  );
+}
+
+/* ================== ADMIN ================== */
+function AdminView({leads,interns,stats,sessions,refresh,notify}){
+  const [section,setSection]=useState("dashboard");    // dashboard | leads | team
+  const [sortBy,setSortBy]=useState("reviews");
+  const [cityFilter,setCityFilter]=useState("All");
+  const [busy,setBusy]=useState(false);
+  const [importReport,setImportReport]=useState(null);
+  const [pendingCity,setPendingCity]=useState("");
+  const [search,setSearch]=useState("");
+  const [assignAllWho,setAssignAllWho]=useState("");
+  const fileRef=useRef();
+  const internNames = interns.length?interns.map(i=>i.name):["Priya","Raj","Ananya"];
+
+  const cities = useMemo(()=>{
+    const set={}; leads.forEach(l=>{ const c=cityGroup(l.City); set[c]=(set[c]||0)+1; });
+    return Object.keys(set).sort();
+  },[leads]);
+
+  const q=search.trim().toLowerCase();
+  const shown = leads.filter(l=>{
+    if(cityFilter!=="All" && cityGroup(l.City)!==cityFilter) return false;
+    if(q){ const hay=((l.Name||"")+" "+(l.Clinic||"")+" "+(l.Phone||"")+" "+(l.City||"")).toLowerCase(); if(hay.indexOf(q)<0) return false; }
+    return true;
+  });
+  const sorted = useMemo(()=>sortLeads(shown,sortBy),[shown,sortBy]);
+
+  async function assignAllShown(){
+    if(!assignAllWho){ notify("Pick a team member"); return; }
+    const rows=sorted.map(l=>l._row).filter(Boolean);
+    if(!rows.length){ notify("Nothing to assign"); return; }
+    if(!confirm("Assign all "+rows.length+" shown leads to "+assignAllWho+"?")) return;
+    setBusy(true);
+    const res=await apiPost({action:"bulkField", rows, field:"Assigned To", value:assignAllWho});
+    setBusy(false); notify(res.ok?("Assigned "+res.updated+" to "+assignAllWho):"Failed"); refresh();
+  }
+
+  async function onFile(e){
+    const f=e.target.files[0]; if(!f) return;
+    const text=await f.text();
+    const parsed=csvToLeads(text, pendingCity.trim());
+    if(!parsed.length){ notify("No valid rows found"); fileRef.current.value=""; return; }
+    setBusy(true);
+    const res=await apiPost({action:"bulkImport", leads:parsed});
+    setBusy(false); fileRef.current.value="";
+    if(res.ok){ setImportReport({imported:res.imported, skipped:res.skipped, overlaps:res.overlaps||[], parsed});
+      notify("Imported "+res.imported+" new · "+res.skipped+" overlaps"); }
+    else notify("Import failed: "+res.error);
+    refresh();
+  }
+  async function overrideExisting(){
+    if(!importReport) return; setBusy(true);
+    const res=await apiPost({action:"bulkImport", leads:importReport.parsed, updateExisting:true});
+    setBusy(false); notify(res.ok?("Refreshed "+res.skipped+" existing"):"Failed"); setImportReport(null); refresh();
+  }
+  async function autoAssign(){
+    setBusy(true); const res=await apiPost({action:"bulkAssign", mode:"auto"}); setBusy(false);
+    notify(res.ok?("Assigned "+res.assigned+" leads"):"Assign failed"); refresh();
+  }
+  async function recategorize(city){
+    const rows=shown.map(l=>l._row).filter(Boolean);
+    if(!rows.length||!city) return;
+    setBusy(true);
+    const res=await apiPost({action:"bulkField", rows, field:"City", value:city});
+    setBusy(false); notify(res.ok?("Moved "+res.updated+" leads to "+city):"Failed"); setCityFilter(city); refresh();
+  }
+  async function clearAll(){
+    const c=prompt('This permanently deletes ALL leads. Type DELETE to confirm.');
+    if(c!=="DELETE"){ notify("Cancelled"); return; }
+    setBusy(true); await apiPost({action:"clearAll"}); setBusy(false); notify("All leads cleared"); refresh();
+  }
+
+  const tabs=[["dashboard","📊 Dashboard"],["leads","📇 Leads"],["pipeline","✅ Pipeline"],["team","👥 Team"]];
+  return (
+    <div className="p-4 max-w-6xl mx-auto space-y-4">
+      <div className="flex gap-1 bg-slate-100 rounded-full p-1 w-max">
+        {tabs.map(([id,label])=>(
+          <button key={id} onClick={()=>setSection(id)}
+            className={"px-4 py-1.5 rounded-full text-sm "+(section===id?"bg-white shadow font-medium":"text-slate-600")}>{label}</button>
+        ))}
+      </div>
+
+      {section==="dashboard" && <React.Fragment>
+        <SummaryCards leads={leads}/>
+        <TeamActivity sessions={sessions} internNames={internNames}/>
+        <TeamStats leads={leads} internNames={internNames} stats={stats} refresh={refresh} notify={notify}/>
+        <TeamUpcoming leads={leads}/>
+      </React.Fragment>}
+
+      {section==="pipeline" && <React.Fragment>
+        <RecordingsPanel notify={notify} refresh={refresh}/>
+        <MeetingsPipeline leads={leads} refresh={refresh} notify={notify}/>
+      </React.Fragment>}
+
+      {section==="team" && <TeamManager interns={interns} refresh={refresh} notify={notify}/>}
+
+      {section==="leads" && <React.Fragment>
+      <QuickSchedule leads={leads} user="Team" refresh={refresh} notify={notify}/>
+      <DuplicatesTool leads={leads} refresh={refresh} notify={notify}/>
+
+      <div className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="font-semibold">Import & assign</div>
+          <DangerMenu onClear={clearAll}/>
+        </div>
+        <div className="flex flex-wrap gap-2 items-center">
+          <input ref={fileRef} type="file" accept=".csv" onChange={onFile} className="hidden"/>
+          <select value={pendingCity} onChange={e=>setPendingCity(e.target.value)} className="border rounded-lg px-2 py-2 text-sm">
+            <option value="">City for this upload… (auto from data)</option>
+            {METROS.map(c=><option key={c}>{c}</option>)}
+          </select>
+          <button onClick={()=>fileRef.current.click()} className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm">Upload CSV</button>
+          <button onClick={autoAssign} className="px-3 py-2 rounded-lg bg-slate-100 text-sm">Auto-assign pool</button>
+          <RangeAssign leads={sorted} internNames={internNames} onDone={refresh} notify={notify}/>
+          {busy && <span className="text-indigo-500 text-sm">working…</span>}
+        </div>
+        <div className="flex flex-wrap gap-2 items-center">
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔎 Search name / clinic / phone / city"
+            className="border rounded-lg px-3 py-2 text-sm flex-1 min-w-[220px]"/>
+          <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">
+            <span className="text-sm text-slate-500">Assign all {sorted.length} shown →</span>
+            <select value={assignAllWho} onChange={e=>setAssignAllWho(e.target.value)} className="border rounded px-1 py-0.5 text-sm">
+              <option value="">who…</option>
+              {internNames.map(n=><option key={n}>{n}</option>)}
+            </select>
+            <button onClick={assignAllShown} className="px-2 py-0.5 rounded bg-indigo-600 text-white text-sm">Go</button>
+          </div>
+        </div>
+        <div className="text-xs text-slate-400">Tip: pick a city before uploading so Delhi / Bangalore / Noida batches stay separate. Overlapping leads are detected and never duplicated.</div>
+      </div>
+
+      {importReport && <ImportReport report={importReport} onOverride={overrideExisting} onDismiss={()=>setImportReport(null)}/>}
+
+      {/* City tabs */}
+      <div className="flex flex-wrap gap-2">
+        <CityTab label={"All ("+leads.length+")"} active={cityFilter==="All"} onClick={()=>setCityFilter("All")}/>
+        {cities.map(c=>{
+          const n=leads.filter(l=>cityGroup(l.City)===c).length;
+          return <CityTab key={c} label={c+" ("+n+")"} active={cityFilter===c} onClick={()=>setCityFilter(c)}/>;
+        })}
+      </div>
+
+      {cityFilter!=="All" &&
+        <div className="flex items-center gap-2 text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+          <span className="text-slate-500">Recategorize all {shown.length} "{cityFilter}" leads →</span>
+          <select value="" onChange={e=>recategorize(e.target.value)} className="border rounded px-2 py-1 text-sm">
+            <option value="">choose city…</option>
+            {METROS.map(c=><option key={c}>{c}</option>)}
+          </select>
+        </div>}
+
+      <div className="flex items-center gap-2 text-sm">
+        <span className="text-slate-500">Sort:</span>
+        {["reviews","rating","internal"].map(k=>(
+          <button key={k} onClick={()=>setSortBy(k)}
+            className={"px-3 py-1 rounded-full "+(sortBy===k?"bg-indigo-600 text-white":"bg-slate-100")}>
+            {k==="internal"?"internal rating":k}</button>
+        ))}
+      </div>
+
+      <AdminLeadTable leads={sorted} internNames={internNames} refresh={refresh} notify={notify}/>
+      </React.Fragment>}
+    </div>
+  );
+}
+
+/* ================== TEAM ACTIVITY (admin: who's online / login times) ================== */
+function TeamActivity({sessions,internNames}){
+  const [,setTick]=useState(0);
+  useEffect(()=>{ const id=setInterval(()=>setTick(t=>t+1),30000); return ()=>clearInterval(id); },[]);
+  sessions=sessions||[];
+  // Latest session per intern for today (last row wins).
+  const byIntern={};
+  sessions.forEach(s=>{ byIntern[s.Intern]=s; });
+  const names = internNames && internNames.length ? internNames : Object.keys(byIntern);
+  const dot=(status)=>{
+    const st=String(status||"");
+    if(/logged out/i.test(st)) return "bg-slate-300";
+    if(/idle/i.test(st)) return "bg-amber-500";
+    if(/working/i.test(st)) return "bg-green-500";
+    return "bg-slate-300";
+  };
+  const label=(s)=>{
+    if(!s) return "Not logged in today";
+    return String(s.Status||"—");
+  };
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-4">
+      <div className="font-semibold mb-1">🟢 Team activity today</div>
+      <div className="text-[11px] text-slate-400 mb-2">Login time, current status, and how long each intern has been dialing. Auto-refreshes.</div>
+      <div className="overflow-x-auto no-scrollbar">
+        <table className="w-full text-sm">
+          <thead className="text-slate-500 text-left"><tr>
+            <th className="py-1 pr-4">Intern</th><th className="py-1 px-2">Status</th><th className="py-1 px-2">Login</th>
+            <th className="py-1 px-2">Last active</th><th className="py-1 px-2">Worked</th><th className="py-1 px-2">Idle</th>
+            <th className="py-1 px-2">Convos</th><th className="py-1 px-2">Recs</th><th className="py-1 px-2">Logout</th></tr></thead>
+          <tbody>
+            {names.map(name=>{
+              const s=byIntern[name];
+              return (
+                <tr key={name} className="border-t border-slate-100">
+                  <td className="py-2 pr-4 font-medium flex items-center gap-2"><span className={"w-2.5 h-2.5 rounded-full "+dot(s&&s.Status)}></span>{name}</td>
+                  <td className="py-2 px-2 text-slate-600">{label(s)}</td>
+                  <td className="py-2 px-2">{s?s.Login:"—"}</td>
+                  <td className="py-2 px-2 text-slate-500">{s?s["Last Active"]:"—"}</td>
+                  <td className="py-2 px-2">{s?(s["Work Min"]||0)+"m":"—"}</td>
+                  <td className="py-2 px-2 text-amber-600">{s?(s["Idle Min"]||0)+"m":"—"}</td>
+                  <td className="py-2 px-2">{s&&s.Convos!==""?s.Convos:"—"}</td>
+                  <td className="py-2 px-2">{s&&s.Recordings!==""?s.Recordings:"—"}</td>
+                  <td className="py-2 px-2 text-slate-500">{s&&s.Logout?s.Logout:"—"}</td>
+                </tr>
+              );
+            })}
+            {names.length===0 && <tr><td colSpan="9" className="py-3 text-slate-400">No sessions yet today.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function SummaryCards({leads}){
+  const total=leads.length;
+  const unassigned=leads.filter(l=>!l["Assigned To"]||l["Assigned To"]==="Team").length;
+  const contacted=leads.filter(l=>l.Status && l.Status!=="New").length;
+  const booked=leads.filter(l=>/booked/i.test(l.Status||"")).length;
+  const followups=leads.filter(l=>/follow/i.test(l.Status||"")||l["Followup Date"]).length;
+  const landed=leads.filter(l=>/landed/i.test(l.Status||"")).length;
+  const card=(label,val,color)=>(<div className="bg-white rounded-2xl border border-slate-200 p-4"><div className={"text-2xl font-bold "+(color||"text-slate-800")}>{val}</div><div className="text-xs text-slate-500 mt-1">{label}</div></div>);
+  const byCity={}; leads.forEach(l=>{const c=cityGroup(l.City);byCity[c]=(byCity[c]||0)+1;});
+  const cityRows=Object.keys(byCity).map(c=>[c,byCity[c]]).sort((a,b)=>b[1]-a[1]);
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        {card("Total leads",total)}
+        {card("Unassigned",unassigned,"text-amber-600")}
+        {card("Contacted",contacted,"text-blue-600")}
+        {card("Meetings booked",booked,"text-green-600")}
+        {card("Follow-ups",followups,"text-amber-600")}
+        {card("Landed (won)",landed,"text-emerald-600")}
+      </div>
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <div className="font-semibold mb-2">Leads by city</div>
+        <div className="space-y-1.5">
+          {cityRows.map(row=>(
+            <div key={row[0]} className="flex items-center gap-2 text-sm">
+              <div className="w-28 truncate">{row[0]}</div>
+              <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden"><div className="bg-indigo-500 h-2" style={{width:(total?row[1]/total*100:0)+"%"}}></div></div>
+              <div className="w-10 text-right text-slate-500">{row[1]}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DuplicatesTool({leads,refresh,notify}){
+  const [busy,setBusy]=useState(false);
+  const [review,setReview]=useState(false);
+  function keyOf(l){ const p=String(l.Phone||"").replace(/\D/g,""); if(p) return "p:"+p.slice(-10); const n=String(l.Clinic||l.Name||"").trim().toLowerCase(); return n?"n:"+n:""; }
+  const groups=useMemo(()=>{
+    const m={}; leads.forEach(l=>{ const k=keyOf(l); if(!k) return; (m[k]=m[k]||[]).push(l); });
+    return Object.keys(m).map(k=>m[k]).filter(g=>g.length>1);
+  },[leads]);
+  const dupCount=groups.reduce((a,g)=>a+(g.length-1),0);
+  function score(l){ let s=0; if(/booked|landed/i.test(l.Status||""))s+=5; if(l.Notes)s+=3; if(l["Assigned To"]&&l["Assigned To"]!=="Team")s+=2; if(l["Followup Date"])s+=2; if(l.Email)s+=1; return s; }
+  async function removeAll(){
+    if(!dupCount) return;
+    if(!confirm("Remove "+dupCount+" duplicate lead(s)? The best record in each group (meeting/notes/assignment) is kept.")) return;
+    setBusy(true);
+    for(let gi=0; gi<groups.length; gi++){
+      const g=groups[gi].slice().sort((a,b)=>score(b)-score(a));
+      for(let i=1;i<g.length;i++){ await apiPost({action:"delete", id:g[i].ID}); }
+    }
+    setBusy(false); notify("Removed "+dupCount+" duplicates"); refresh();
+  }
+  async function delOne(id){
+    if(!confirm("Delete this duplicate record? (This can't be undone.)")) return;
+    setBusy(true); const res=await apiPost({action:"delete", id}); setBusy(false);
+    notify(res.ok?"Deleted":"Failed"); refresh();
+  }
+  if(!groups.length) return <div className="bg-white rounded-2xl border border-slate-200 p-4 text-sm text-slate-500">✓ No duplicate leads found.</div>;
+  return (
+    <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="font-semibold text-amber-900">🔁 Duplicates: {groups.length} groups · {dupCount} extra record(s)</div>
+        <div className="flex gap-2">
+          <button onClick={()=>setReview(!review)} className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-800 text-sm">{review?"Hide review":"Review & choose"}</button>
+          <button onClick={removeAll} disabled={busy} className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-sm disabled:opacity-40">{busy?"Removing…":"Auto-remove (keep best)"}</button>
+        </div>
+      </div>
+      {!review
+        ? <div className="max-h-40 overflow-y-auto no-scrollbar text-xs text-amber-800 space-y-0.5">
+            {groups.slice(0,30).map((g,i)=><div key={i}>• {g[0].Clinic||g[0].Name} — {g.length} copies</div>)}
+          </div>
+        : <div className="space-y-2 max-h-96 overflow-y-auto no-scrollbar">
+            {groups.map((g,gi)=>{
+              const best=g.slice().sort((a,b)=>score(b)-score(a))[0];
+              return (
+                <div key={gi} className="bg-white rounded-lg border border-amber-200 p-2">
+                  <div className="text-[11px] font-semibold text-slate-500 mb-1">{g.length} copies of “{g[0].Clinic||g[0].Name}”</div>
+                  {g.map(l=>(
+                    <div key={l.ID} className="flex items-center justify-between text-sm border-t border-slate-100 py-1.5 first:border-0">
+                      <div className="min-w-0">
+                        <span className="font-medium">{l.Clinic||l.Name}</span>
+                        {l.ID===best.ID && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">keep</span>}
+                        <div className="text-[11px] text-slate-400 truncate">{l.Phone||"no phone"} · {l.City||"—"} · {l["Assigned To"]||"unassigned"} · {l.Status||"New"}{l.Notes?" · has notes":""}</div>
+                      </div>
+                      <button onClick={()=>delOne(l.ID)} disabled={busy} className="text-red-500 text-xs ml-2 shrink-0">Delete</button>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>}
+      <div className="text-[11px] text-amber-700">Auto-remove keeps the record with a meeting / notes / assignment and deletes the rest. Or <b>Review &amp; choose</b> to pick exactly which copies to delete.</div>
+    </div>
+  );
+}
+
+function CityTab({label,active,onClick}){
+  return <button onClick={onClick} className={"px-3 py-1.5 rounded-full text-sm border "+(active?"bg-slate-900 text-white border-slate-900":"bg-white border-slate-200")}>{label}</button>;
+}
+
+function DangerMenu({onClear}){
+  const [open,setOpen]=useState(false);
+  return (
+    <div className="relative">
+      <button onClick={()=>setOpen(!open)} className="px-2 py-1 rounded-lg hover:bg-slate-100 text-slate-500 text-xl leading-none">⋮</button>
+      {open && (
+        <div className="absolute right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-20 w-48 overflow-hidden">
+          <button onClick={()=>{setOpen(false);onClear();}} className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50">Clear all leads…</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ImportReport({report,onOverride,onDismiss}){
+  return (
+    <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-2">
+      <div className="font-semibold text-amber-900">Import summary</div>
+      <div className="text-sm text-amber-900">
+        <b>{report.imported}</b> new leads added.
+        {report.skipped>0 ? <> <b>{report.skipped}</b> overlapping leads were <b>kept as-is</b> (notes, status & assignments preserved — not duplicated).</> : <> No overlaps.</>}
+      </div>
+      {report.overlaps.length>0 &&
+        <div className="text-xs text-amber-700">Overlaps: {report.overlaps.slice(0,12).join(", ")}{report.overlaps.length>12?" …":""}</div>}
+      {report.skipped>0 &&
+        <div className="flex gap-2 pt-1">
+          <button onClick={onOverride} className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-sm">Refresh the {report.skipped} existing with fresh data</button>
+          <button onClick={onDismiss} className="px-3 py-1.5 rounded-lg bg-white border text-sm">Dismiss</button>
+        </div>}
+    </div>
+  );
+}
+
+function RangeAssign({leads,internNames,onDone,notify}){
+  const [open,setOpen]=useState(false);
+  const [from,setFrom]=useState(""); const [to,setTo]=useState(""); const [who,setWho]=useState(internNames[0]);
+  async function go(){
+    const f=parseInt(from,10), t=parseInt(to,10);
+    if(!f||!t){ notify("Enter a row range"); return; }
+    const rows=leads.slice(f-1,t).map(l=>l._row).filter(Boolean);
+    if(!rows.length){ notify("No leads in that range"); return; }
+    const res=await apiPost({action:"bulkField", rows, field:"Assigned To", value:who});
+    notify(res.ok?("Assigned "+res.updated+" to "+who):"Failed"); setOpen(false); onDone();
+  }
+  if(!open) return <button onClick={()=>setOpen(true)} className="px-3 py-2 rounded-lg bg-slate-100 text-sm">Assign by range</button>;
+  return (
+    <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">
+      <span className="text-sm">rows</span>
+      <input value={from} onChange={e=>setFrom(e.target.value)} className="w-14 border rounded px-1 py-0.5 text-sm" placeholder="1"/>
+      <span className="text-sm">to</span>
+      <input value={to} onChange={e=>setTo(e.target.value)} className="w-14 border rounded px-1 py-0.5 text-sm" placeholder="50"/>
+      <span className="text-sm">→</span>
+      <select value={who} onChange={e=>setWho(e.target.value)} className="border rounded px-1 py-0.5 text-sm">
+        {internNames.map(n=><option key={n}>{n}</option>)}</select>
+      <button onClick={go} className="px-2 py-0.5 rounded bg-indigo-600 text-white text-sm">Go</button>
+      <button onClick={()=>setOpen(false)} className="px-1 text-slate-400">✕</button>
+    </div>
+  );
+}
+
+function sortLeads(leads,by){
+  const cp=[...leads];
+  if(by==="reviews") cp.sort((a,b)=>num(b.Reviews)-num(a.Reviews));
+  else if(by==="rating") cp.sort((a,b)=>num(b.Rating)-num(a.Rating));
+  else if(by==="internal") cp.sort((a,b)=>num(b["Internal Rating"])-num(a["Internal Rating"]));
+  return cp;
+}
+
+function AdminLeadTable({leads,internNames,refresh,notify}){
+  const [edit,setEdit]=useState(null);
+  async function assignOne(lead,who){ await apiPost({action:"bulkField", rows:[lead._row], field:"Assigned To", value:who}); notify("Assigned to "+who); refresh(); }
+  async function del(lead){ if(!confirm("Delete "+(lead.Clinic||lead.Name)+"?")) return; await apiPost({action:"delete", id:lead.ID}); notify("Deleted"); refresh(); }
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+      {edit && <EditLead lead={edit} onClose={()=>setEdit(null)} refresh={refresh} notify={notify}/>}
+      <div className="px-4 py-2 text-sm text-slate-500 border-b">{leads.length} leads</div>
+      <div className="overflow-x-auto no-scrollbar">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-500 text-left"><tr>
+            <th className="px-3 py-2">#</th><th className="px-3 py-2">Clinic / Name</th><th className="px-3 py-2">City</th>
+            <th className="px-3 py-2">Rev</th><th className="px-3 py-2">★</th><th className="px-3 py-2">Status</th>
+            <th className="px-3 py-2">Assigned</th><th className="px-3 py-2"></th></tr></thead>
+          <tbody>
+            {leads.map((l,i)=>(
+              <tr key={l.ID||i} className="border-t border-slate-100">
+                <td className="px-3 py-2 text-slate-400">{i+1}</td>
+                <td className="px-3 py-2 font-medium">{l.Clinic||l.Name}{l.Clinic&&l.Name?<div className="text-xs text-slate-400">{l.Name}</div>:null}</td>
+                <td className="px-3 py-2">{l.City}</td>
+                <td className="px-3 py-2">{l.Reviews}</td>
+                <td className="px-3 py-2">{l.Rating}</td>
+                <td className="px-3 py-2"><StatusBadge status={l.Status}/></td>
+                <td className="px-3 py-2">
+                  <select value={l["Assigned To"]||""} onChange={e=>assignOne(l,e.target.value)} className="border rounded px-1 py-0.5 text-xs">
+                    <option value="">—</option><option>Team</option>
+                    {internNames.map(n=><option key={n}>{n}</option>)}</select>
+                </td>
+                <td className="px-3 py-2 whitespace-nowrap">
+                  <button onClick={()=>setEdit(l)} className="text-slate-400 hover:text-indigo-600 mr-2">✎</button>
+                  <button onClick={()=>del(l)} className="text-red-400 hover:text-red-600">✕</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function EditLead({lead,onClose,refresh,notify}){
+  const [f,setF]=useState({Clinic:lead.Clinic||"",Name:lead.Name||"",Phone:lead.Phone||"",Email:lead.Email||"",City:lead.City||"",Status:lead.Status||"New"});
+  const [saving,setSaving]=useState(false);
+  async function save(){
+    setSaving(true);
+    const res=await apiPost({action:"upsert", lead:Object.assign({ID:lead.ID}, f)});
+    setSaving(false);
+    if(res.ok){ notify("Lead updated"); onClose(); refresh(); } else notify("Failed: "+res.error);
+  }
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-4 w-full max-w-sm space-y-2" onClick={e=>e.stopPropagation()}>
+        <div className="font-semibold">Edit lead</div>
+        {[["Clinic","Clinic name"],["Name","Doctor name"],["Phone","Phone"],["Email","Doctor email"],["City","City"]].map(fld=>(
+          <div key={fld[0]}>
+            <label className="text-[11px] text-slate-500">{fld[1]}</label>
+            <input value={f[fld[0]]} onChange={e=>setF(Object.assign({},f,{[fld[0]]:e.target.value}))} className="w-full border rounded-lg px-3 py-2 text-sm"/>
+          </div>
+        ))}
+        <div>
+          <label className="text-[11px] text-slate-500">Status</label>
+          <select value={f.Status} onChange={e=>setF(Object.assign({},f,{Status:e.target.value}))} className="w-full border rounded-lg px-3 py-2 text-sm">
+            {["New"].concat(OUTCOMES).map(o=><option key={o}>{o}</option>)}
+          </select>
+        </div>
+        <div className="flex gap-2 pt-1">
+          <button onClick={save} disabled={saving} className="flex-1 py-2 rounded-lg bg-indigo-600 text-white text-sm disabled:opacity-40">{saving?"Saving…":"Save"}</button>
+          <button onClick={onClose} className="px-3 py-2 rounded-lg bg-white border text-sm">Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatusBadge({status}){
+  const s=status||"New";
+  const color=/Booked/i.test(s)?"bg-green-100 text-green-700"
+    :/Landed/i.test(s)?"bg-emerald-100 text-emerald-700"
+    :/Interested/i.test(s)&&!/Not/i.test(s)?"bg-blue-100 text-blue-700"
+    :/Dumped|Not Interested/i.test(s)?"bg-slate-200 text-slate-500"
+    :/Follow/i.test(s)?"bg-amber-100 text-amber-700":"bg-slate-100 text-slate-600";
+  return <span className={"px-2 py-0.5 rounded-full text-xs "+color}>{s}</span>;
+}
+
+/* ================== TEAM MANAGEMENT ================== */
+function TeamManager({interns,refresh,notify}){
+  const [open,setOpen]=useState(interns.length===0);
+  const [name,setName]=useState(""); const [email,setEmail]=useState("");
+  async function add(){
+    if(!name.trim()){ notify("Enter a name"); return; }
+    const res=await apiPost({action:"addIntern", name:name.trim(), email:email.trim()});
+    if(res.ok){ notify("Added "+name); setName(""); setEmail(""); refresh(); } else notify("Failed: "+res.error);
+  }
+  async function remove(n){
+    if(!confirm("Remove "+n+" from the team?")) return;
+    const res=await apiPost({action:"removeIntern", name:n});
+    notify(res.ok?("Removed "+n):"Failed"); refresh();
+  }
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-4">
+      <div className="flex items-center justify-between">
+        <div className="font-semibold">Team members ({interns.length})</div>
+        <button onClick={()=>setOpen(!open)} className="text-sm px-3 py-1.5 rounded-lg bg-slate-100">{open?"Close":"Manage"}</button>
+      </div>
+      {interns.length===0 &&
+        <div className="text-sm text-amber-700 mt-2">No team members yet — add your interns (with real email inboxes) so leads can be assigned and reminders reach them.</div>}
+      {open &&
+        <div className="mt-3 space-y-2">
+          {interns.map(i=>(
+            <div key={i.name} className="flex items-center justify-between text-sm border-t border-slate-100 pt-2">
+              <span><b>{i.name}</b> <span className="text-slate-400">{i.email||"(no email)"}</span></span>
+              <button onClick={()=>remove(i.name)} className="text-red-500 text-xs">remove</button>
+            </div>
+          ))}
+          <div className="flex flex-wrap gap-2 pt-2">
+            <input value={name} onChange={e=>setName(e.target.value)} placeholder="Name (e.g. Priya)" className="border rounded-lg px-2 py-1.5 text-sm"/>
+            <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="Email — real inbox for reminders" className="border rounded-lg px-2 py-1.5 text-sm flex-1 min-w-[220px]"/>
+            <button onClick={add} className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm">Add member</button>
+          </div>
+        </div>}
+    </div>
+  );
+}
+
+/* ================== TEAM STATS ================== */
+function TeamStats({leads,internNames,stats,refresh,notify}){
+  stats=stats||{};
+  const [detail,setDetail]=useState(null);
+  const rows=internNames.map(name=>{
+    const s=stats[name]||{};
+    const dials=s.dials||0, convos=s.conversations||0, meetings=s.meetings||0, followups=s.followups||0, landed=s.landed||0;
+    // "Assigned" = current workload (live); the rest are real cumulative call counters.
+    const assigned=leads.filter(l=>String(l["Assigned To"]||"").trim().toLowerCase()===name.toLowerCase()).length;
+    return {name,assigned,dials,convos,meetings,followups,landed,
+      bookingRate:dials?meetings/dials*100:0, closeRate:meetings?landed/meetings*100:0};
+  });
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-4">
+      <div className="font-semibold mb-3">Team Stats</div>
+      <div className="overflow-x-auto no-scrollbar">
+        <table className="w-full text-sm">
+          <thead className="text-slate-500 text-left"><tr>
+            <th className="py-1 pr-4">Intern</th><th className="py-1 px-2">Assigned</th><th className="py-1 px-2">Dials</th><th className="py-1 px-2">Convos</th>
+            <th className="py-1 px-2">Meetings</th><th className="py-1 px-2">Follow-ups</th><th className="py-1 px-2">Landed</th>
+            <th className="py-1 px-2">Booking %</th><th className="py-1 px-2">Close %</th></tr></thead>
+          <tbody>
+            {rows.map(r=>(
+              <tr key={r.name} className="border-t border-slate-100">
+                <td className="py-2 pr-4 font-medium"><button onClick={()=>setDetail(r.name)} className="text-indigo-600 hover:underline">{r.name}</button></td>
+                <td className="py-2 px-2 text-slate-500">{r.assigned}</td>
+                <td className="py-2 px-2">{r.dials}</td><td className="py-2 px-2">{r.convos}</td>
+                <td className="py-2 px-2">{r.meetings}</td><td className="py-2 px-2">{r.followups}</td>
+                <td className="py-2 px-2">{r.landed}</td>
+                <td className="py-2 px-2">{r.bookingRate.toFixed(0)}%</td><td className="py-2 px-2">{r.closeRate.toFixed(0)}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="text-xs text-slate-400 mt-2">Booking % = meetings ÷ dials · Close % = landed ÷ meetings · tap a name to manage</div>
+      {detail && <InternDetail name={detail} leads={leads} internNames={internNames} stats={stats} refresh={refresh} notify={notify} onClose={()=>setDetail(null)}/>}
+    </div>
+  );
+}
+
+function InternDetail({name,leads,internNames,stats,refresh,notify,onClose}){
+  const mine=leads.filter(l=>String(l["Assigned To"]||"").trim().toLowerCase()===name.toLowerCase());
+  const s=(stats||{})[name]||{};
+  const [edit,setEdit]=useState(null);
+  const [reassignTo,setReassignTo]=useState("");
+  const [busy,setBusy]=useState(false);
+  const others=internNames.filter(n=>n!==name);
+  async function bulk(field,value,msg,confirmMsg){
+    if(!confirm(confirmMsg)) return;
+    const rows=mine.map(l=>l._row).filter(Boolean);
+    if(!rows.length){ notify("No leads"); return; }
+    setBusy(true);
+    const res=await apiPost({action:"bulkField", rows, field, value});
+    setBusy(false); notify(res.ok?(msg+" ("+res.updated+")"):"Failed"); refresh(); onClose();
+  }
+  async function resetStats(){
+    if(!confirm("Reset "+name+"’s call stats (dials/convos/meetings) to zero?")) return;
+    const cur=Object.assign({},stats||{}); delete cur[name];
+    setBusy(true); await apiPost({action:"saveStats", stats:cur}); setBusy(false); notify("Stats reset for "+name); refresh(); onClose();
+  }
+  async function del(l){ if(!confirm("Delete "+(l.Clinic||l.Name)+"?")) return; await apiPost({action:"delete", id:l.ID}); notify("Deleted"); refresh(); }
+  const stat=(label,v)=>(<div className="text-center px-2"><div className="text-lg font-bold">{v||0}</div><div className="text-[10px] uppercase text-slate-400">{label}</div></div>);
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      {edit && <EditLead lead={edit} onClose={()=>setEdit(null)} refresh={refresh} notify={notify}/>}
+      <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto no-scrollbar p-4 space-y-3" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <div className="text-lg font-bold">{name}</div>
+          <button onClick={onClose} className="text-slate-400 text-lg leading-none">✕</button>
+        </div>
+        <div className="flex flex-wrap gap-1 bg-slate-50 rounded-xl border border-slate-200 py-2">
+          {stat("Assigned",mine.length)}{stat("Dials",s.dials)}{stat("Convos",s.conversations)}{stat("Meetings",s.meetings)}{stat("Follow-ups",s.followups)}{stat("Landed",s.landed)}
+        </div>
+        <div className="flex flex-wrap gap-2 items-center">
+          <select value={reassignTo} onChange={e=>setReassignTo(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm">
+            <option value="">Reassign all to…</option>{others.map(n=><option key={n}>{n}</option>)}<option>Team</option>
+          </select>
+          <button disabled={busy||!reassignTo} onClick={()=>bulk("Assigned To",reassignTo,"Reassigned to "+reassignTo,"Reassign all "+mine.length+" of "+name+"’s leads to "+reassignTo+"?")} className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm disabled:opacity-40">Go</button>
+          <button disabled={busy} onClick={()=>bulk("Assigned To","Team","Unassigned","Unassign all "+mine.length+" of "+name+"’s leads back to the Team pool?")} className="px-3 py-1.5 rounded-lg bg-slate-100 text-sm">Unassign all</button>
+          <button disabled={busy} onClick={resetStats} className="px-3 py-1.5 rounded-lg bg-amber-50 text-amber-700 text-sm">Reset stats</button>
+        </div>
+        <div className="border border-slate-200 rounded-xl overflow-hidden">
+          <div className="px-3 py-2 text-sm text-slate-500 border-b">{mine.length} leads assigned to {name}</div>
+          <div className="max-h-72 overflow-y-auto no-scrollbar">
+            <table className="w-full text-sm">
+              <tbody>
+                {mine.map((l,i)=>(
+                  <tr key={l.ID||i} className="border-t border-slate-100 first:border-0">
+                    <td className="px-3 py-2"><div className="font-medium">{l.Clinic||l.Name}</div><div className="text-[11px] text-slate-400">{l.Phone||"no phone"} · {l.City}</div></td>
+                    <td className="px-3 py-2"><StatusBadge status={l.Status}/></td>
+                    <td className="px-3 py-2 whitespace-nowrap text-right">
+                      <button onClick={()=>setEdit(l)} className="text-slate-400 hover:text-indigo-600 mr-2">✎</button>
+                      <button onClick={()=>del(l)} className="text-red-400 hover:text-red-600">✕</button>
+                    </td>
+                  </tr>
+                ))}
+                {mine.length===0 && <tr><td className="px-3 py-3 text-sm text-slate-400">No leads assigned.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================== TEAM UPCOMING (admin) ================== */
+function TeamUpcoming({leads}){
+  const [,setTick]=useState(0);
+  useEffect(()=>{ const id=setInterval(()=>setTick(t=>t+1),30000); return ()=>clearInterval(id); },[]);
+  const events=upcomingEvents(leads).slice(0,12);
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-4">
+      <div className="font-semibold mb-3">Upcoming across the team</div>
+      {events.length===0
+        ? <div className="text-sm text-slate-400">No upcoming meetings or follow-ups.</div>
+        : <div className="space-y-1">
+            {events.map((ev,i)=>{
+              const ms=ev.when.getTime()-Date.now();
+              return (
+                <div key={i} className="flex items-center justify-between text-sm border-t border-slate-100 py-1.5 first:border-0">
+                  <div className="flex items-center gap-2">
+                    <span className={"px-2 py-0.5 rounded-full text-xs "+(ev.type==="Meeting"?"bg-green-100 text-green-700":"bg-amber-100 text-amber-700")}>{ev.type}</span>
+                    <span className="font-medium">{ev.lead.Clinic||ev.lead.Name}</span>
+                    <span className="text-slate-400">· {ev.lead["Assigned To"]||"unassigned"}</span>
+                  </div>
+                  <div className="text-slate-500">{fmtWhen(ev.when)} · <b className={ms<30*60000?"text-red-600":""}>{fmtCountdown(ms)}</b></div>
+                </div>
+              );
+            })}
+          </div>}
+    </div>
+  );
+}
+
+/* ================== INTERN ================== */
+function InternView({user,leads,stats,refresh,notify}){
+  const [mode,setMode]=useState("call");
+  const mine=useMemo(()=>leads.filter(l=>String(l["Assigned To"]||"").trim().toLowerCase()===String(user).toLowerCase()),[leads,user]);
+  const queue=useMemo(()=>mine.filter(l=>!/Booked|Landed|Dumped|Not Interested/i.test(l.Status||"")),[mine]);
+  const [idx,setIdx]=useState(0);
+  const active=queue[idx];
+  useEffect(()=>{ if(idx>=queue.length) setIdx(Math.max(0,queue.length-1)); },[queue.length]);
+
+  const myStats=useMemo(()=>{
+    const srv=(stats||{})[user]||{};
+    return {assigned:mine.length, dials:srv.dials||0, convos:srv.conversations||0, meetings:srv.meetings||0, followups:srv.followups||0};
+  },[mine,stats,user]);
+  const dueCount=useMemo(()=>pipelineEvents(mine).filter(e=>e.when.getTime()<=Date.now()).length,[mine]);
+
+  return (
+    <div className="p-4 max-w-2xl mx-auto space-y-4">
+      <div className="flex items-center justify-between">
+        <StatsBar s={myStats}/>
+        <div className="flex gap-1 bg-slate-100 rounded-full p-1">
+          <button onClick={()=>setMode("call")} className={"px-3 py-1 rounded-full text-sm "+(mode==="call"?"bg-white shadow":"")}>Call</button>
+          <button onClick={()=>setMode("close")} className={"px-3 py-1 rounded-full text-sm "+(mode==="close"?"bg-white shadow":"")}>Close{dueCount>0?" ("+dueCount+")":""}</button>
+          <button onClick={()=>setMode("list")} className={"px-3 py-1 rounded-full text-sm "+(mode==="list"?"bg-white shadow":"")}>List</button>
+        </div>
+      </div>
+      <QuickSchedule leads={mine} user={user} refresh={refresh} notify={notify}/>
+      {mode==="list"
+        ? <InternList mine={mine} refresh={refresh} notify={notify}/>
+        : mode==="close"
+          ? <MeetingsPipeline leads={mine} refresh={refresh} notify={notify}/>
+          : (queue.length===0
+              ? <div className="bg-white rounded-2xl border p-8 text-center text-slate-500">No leads in your queue. 🎉</div>
+              : <CallCard key={active.ID} lead={active} user={user} position={idx+1} total={queue.length}
+                  onPrev={()=>setIdx(Math.max(0,idx-1))} onNext={()=>setIdx(Math.min(queue.length-1,idx+1))}
+                  onSaved={refresh} notify={notify}/>)}
+    </div>
+  );
+}
+
+function StatsBar({s}){
+  const item=(label,v)=>(<div className="text-center"><div className="text-lg font-bold">{v}</div><div className="text-[10px] uppercase text-slate-400">{label}</div></div>);
+  return <div className="flex gap-4 bg-white rounded-xl border border-slate-200 px-4 py-2">{item("Queue",s.assigned)}{item("Dials",s.dials)}{item("Convos",s.convos)}{item("Meetings",s.meetings)}{item("Follow",s.followups)}</div>;
+}
+
+function InternList({mine,refresh,notify}){
+  const [edit,setEdit]=useState(null);
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+      {edit && <EditLead lead={edit} onClose={()=>setEdit(null)} refresh={refresh} notify={notify}/>}
+      <div className="px-4 py-2 text-sm text-slate-500 border-b">{mine.length} assigned to you · tap ✎ to add/fix a number</div>
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 text-slate-500 text-left"><tr>
+          <th className="px-3 py-2">#</th><th className="px-3 py-2">Clinic</th><th className="px-3 py-2">City</th><th className="px-3 py-2">Phone</th><th className="px-3 py-2">Status</th><th className="px-3 py-2"></th></tr></thead>
+        <tbody>
+          {mine.map((l,i)=>(
+            <tr key={l.ID||i} className="border-t border-slate-100">
+              <td className="px-3 py-2 text-slate-400">{i+1}</td>
+              <td className="px-3 py-2 font-medium">{l.Clinic||l.Name}</td>
+              <td className="px-3 py-2">{l.City}</td>
+              <td className={"px-3 py-2 "+((!l.Phone||String(l.Phone).trim()==="")?"text-red-400":"")}>{l.Phone||"— add"}</td>
+              <td className="px-3 py-2"><StatusBadge status={l.Status}/></td>
+              <td className="px-3 py-2"><button onClick={()=>setEdit(l)} className="text-slate-400 hover:text-indigo-600">✎</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ================== CALL CARD ================== */
+function CallCard({lead,user,position,total,onPrev,onNext,onSaved,notify}){
+  const [outcome,setOutcome]=useState("");
+  const [note,setNote]=useState("");
+  const [saving,setSaving]=useState(false);
+  const [picker,setPicker]=useState(null);
+  const [dt,setDt]=useState({date:todayISO(),time:"11:00"});
+
+  const wa=waNumber(lead.Phone);
+  const waMsg=encodeURIComponent("Hi Dr. "+(lead.Name||"")+", I'm reaching out from Reactivify — we build websites for clinics like "+(lead.Clinic||"yours")+". Do you have a couple of minutes to chat?");
+  const notesHistory=String(lead.Notes||"").trim();
+  const booked=/booked/i.test(lead.Status||"");
+  const gcal=booked?gcalUrl(lead):"";
+
+  async function save(extra, opts){
+    opts=opts||{};
+    setSaving(true);
+    const patch={ID:lead.ID};
+    const effOutcome = opts.outcome!==undefined ? opts.outcome : outcome;
+    if(effOutcome) patch.Status=effOutcome;
+    if(note.trim()){ const entry="["+nowStamp()+" · "+user+"] "+note.trim();
+      patch.Notes=notesHistory?(notesHistory+"\n"+entry):entry; patch["Last Follow-up Date"]=todayISO(); }
+    Object.assign(patch,extra||{});
+    const payload={action:"upsert", lead:patch};
+    // count this as a logged call outcome (accurate cumulative stats)
+    if(effOutcome && !opts.noStat) payload.logStat={intern:user, outcome:effOutcome};
+    const res=await apiPost(payload);
+    setSaving(false);
+    if(res.ok){ notify(opts.msg||"Saved"); onSaved(); if(!opts.stay) onNext(); } else notify("Save failed: "+res.error);
+  }
+  function confirmPicker(){
+    if(picker==="meeting") save({Status:"Meeting Booked","Meeting Date":dt.date,"Meeting Time":dt.time},{outcome:"Meeting Booked"});
+    else if(picker==="followup") save({Status:"Schedule Follow-up","Followup Date":dt.date,"Followup Time":dt.time},{outcome:"Schedule Follow-up"});
+    setPicker(null);
+  }
+  function onOutcomeChange(v){ setOutcome(v); if(v==="Meeting Booked") setPicker("meeting"); else if(v==="Schedule Follow-up") setPicker("followup"); }
+  function rescheduleMeeting(){ setDt({date:lead["Meeting Date"]||todayISO(), time:lead["Meeting Time"]||"11:00"}); setPicker("meeting"); }
+  function cancelMeeting(){
+    if(!confirm("Cancel this meeting? It will be removed from the calendar.")) return;
+    save({Status:"Interested","Meeting Date":"","Meeting Time":""},{outcome:"", noStat:true, stay:true, msg:"Meeting cancelled"});
+  }
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-4">
+      <div className="flex items-center justify-between text-sm text-slate-400">
+        <button onClick={onPrev} disabled={position<=1} className="disabled:opacity-30">← Prev</button>
+        <span>{position} / {total}</span>
+        <button onClick={onNext} disabled={position>=total} className="disabled:opacity-30">Next →</button>
+      </div>
+      <div>
+        <div className="text-xl font-bold">{lead.Clinic||lead.Name}</div>
+        {lead.Clinic&&lead.Name && <div className="text-slate-500">Dr. {lead.Name}</div>}
+        <div className="text-sm text-slate-500 mt-1 flex flex-wrap gap-x-3">
+          {lead.City && <span>📍 {lead.City}</span>}
+          {lead.Rating && <span>★ {lead.Rating}</span>}
+          {lead.Reviews && <span>{lead.Reviews} reviews</span>}
+          {lead["Conflict Flag"]==="true" && <span className="text-red-500">⚠ slot conflict</span>}
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <a href={"tel:"+digits(lead.Phone)} className="text-center py-3 rounded-xl bg-green-600 text-white font-semibold">📞 Call</a>
+        <a href={"https://wa.me/"+wa+"?text="+waMsg} target="_blank" className="text-center py-3 rounded-xl bg-emerald-500 text-white font-semibold">WhatsApp</a>
+        <a href={"mailto:"+(lead.Email||"")} className="text-center py-3 rounded-xl bg-slate-600 text-white font-semibold">✉ Email</a>
+      </div>
+      <div className="text-xs text-slate-400 text-center">{lead.Phone}{lead.Email?" · "+lead.Email:""}</div>
+
+      {booked && lead["Meeting Date"] &&
+        <div className="bg-green-50 rounded-xl p-3 text-sm space-y-2">
+          <div className="flex items-center justify-between">
+            <span>📅 Meeting: <b>{lead["Meeting Date"]} {lead["Meeting Time"]}</b></span>
+            {gcal && <a href={gcal} target="_blank" className="px-2 py-1 rounded-lg bg-white border text-xs">Add to Calendar</a>}
+          </div>
+          <div className="flex gap-2">
+            <button onClick={rescheduleMeeting} className="px-2 py-1 rounded-lg bg-white border text-xs">Reschedule</button>
+            <button onClick={cancelMeeting} className="px-2 py-1 rounded-lg bg-white border text-xs text-red-600">Cancel meeting</button>
+          </div>
+        </div>}
+
+      {lead.Recording &&
+        <div className="bg-slate-50 rounded-xl p-3 space-y-1">
+          <div className="text-xs font-semibold text-slate-400">Call recordings</div>
+          {String(lead.Recording).split("\n").filter(Boolean).map((u,i)=><a key={i} href={u} target="_blank" className="block text-sm text-indigo-600">▶ Recording {i+1}</a>)}
+        </div>}
+      {lead.Coaching &&
+        <div className="bg-indigo-50 rounded-xl p-3 max-h-56 overflow-y-auto no-scrollbar">
+          <div className="text-xs font-semibold text-indigo-400 mb-1">🎯 AI coaching</div>
+          <div className="text-sm text-slate-700 whitespace-pre-wrap">{lead.Coaching}</div>
+        </div>}
+
+      {notesHistory &&
+        <div className="bg-slate-50 rounded-xl p-3 max-h-40 overflow-y-auto no-scrollbar">
+          <div className="text-xs font-semibold text-slate-400 mb-1">Notes history</div>
+          {notesHistory.split("\n").map((line,i)=><div key={i} className="text-sm text-slate-600 mb-1">{line}</div>)}
+        </div>}
+
+      <div className="space-y-2">
+        <select value={outcome} onChange={e=>onOutcomeChange(e.target.value)} className="w-full border rounded-xl px-3 py-2">
+          <option value="">— Select outcome —</option>{OUTCOMES.map(o=><option key={o}>{o}</option>)}</select>
+        <textarea value={note} onChange={e=>setNote(e.target.value)} rows={2} placeholder="Add a note (appended, never overwrites)…" className="w-full border rounded-xl px-3 py-2 text-sm"/>
+      </div>
+
+      {picker &&
+        <div className="bg-indigo-50 rounded-xl p-3 space-y-2">
+          <div className="text-sm font-semibold">{picker==="meeting"?"Book meeting":"Schedule follow-up"}</div>
+          <div className="flex gap-2">
+            <input type="date" value={dt.date} onChange={e=>setDt({...dt,date:e.target.value})} className="border rounded-lg px-2 py-1 text-sm flex-1"/>
+            <input type="time" value={dt.time} onChange={e=>setDt({...dt,time:e.target.value})} className="border rounded-lg px-2 py-1 text-sm flex-1"/>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={confirmPicker} className="flex-1 py-2 rounded-lg bg-indigo-600 text-white text-sm">Confirm</button>
+            <button onClick={()=>{setPicker(null);setOutcome("");}} className="px-3 py-2 rounded-lg bg-white border text-sm">Cancel</button>
+          </div>
+        </div>}
+
+      <button onClick={()=>save()} disabled={saving||(!outcome&&!note.trim())} className="w-full py-3 rounded-xl bg-indigo-600 text-white font-semibold disabled:opacity-40">
+        {saving?"Saving…":"Save & Next →"}</button>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+
+<script>
+  // Force Babel's CLASSIC JSX runtime (React.createElement) — the automatic
+  // runtime emits `import` statements that break as an inline script.
+  (function () {
+    try {
+      var src = document.getElementById("app-code").textContent;
+      var out = Babel.transform(src, { presets: [["react", { runtime: "classic" }]] }).code;
+      var s = document.createElement("script");
+      s.textContent = out;
+      document.body.appendChild(s);
+    } catch (e) {
+      document.getElementById("root").innerHTML =
+        '<div style="padding:24px;font-family:sans-serif;color:#b91c1c">App failed to load: ' +
+        (e && e.message ? e.message : e) + '</div>';
+      console.error(e);
+    }
+  })();
+</script>
+</body>
+</html>

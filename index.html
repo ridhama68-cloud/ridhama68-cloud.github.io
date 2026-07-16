@@ -402,6 +402,37 @@ function QuickSchedule({leads,user,refresh,notify}){
   );
 }
 
+/* ============ CALL RECORDINGS + AI COACHING ============ */
+function RecordingsPanel({notify,refresh}){
+  const [busy,setBusy]=useState("");
+  const [msg,setMsg]=useState("");
+  async function sync(){
+    setBusy("sync"); setMsg("Scanning Drive…");
+    const res=await apiPost({action:"attachRecordings"});
+    setBusy("");
+    if(res.ok&&!res.error){ setMsg("✓ Attached "+res.attached+" recording link(s) · scanned "+res.scanned+" file(s) · "+res.unmatched+" unmatched"); refresh(); }
+    else setMsg("⚠ "+(res.error||"Failed — check the Drive folder is shared with the tool's account."));
+  }
+  async function coach(){
+    setBusy("coach"); setMsg("Transcribing & coaching today's calls… this can take a minute.");
+    const res=await apiPost({action:"coachCalls", onlyToday:true});
+    setBusy("");
+    if(res.ok&&!res.error){ setMsg("✓ Coached "+res.coached+" call(s)"+(res.remaining?(" · "+res.remaining+" left, press again"):"")+(res.errors?(" · "+res.errors+" errors"):"")); refresh(); }
+    else setMsg("⚠ "+(res.error||"Failed"));
+  }
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-4 space-y-2">
+      <div className="font-semibold">🎧 Call recordings & AI coaching</div>
+      <div className="text-[11px] text-slate-400">Sync pulls recordings from your Drive folder onto matching leads (by phone number). Coach transcribes + scores today's calls with AI.</div>
+      <div className="flex flex-wrap gap-2 pt-1">
+        <button onClick={sync} disabled={!!busy} className="px-3 py-1.5 rounded-lg bg-slate-100 text-sm disabled:opacity-40">{busy==="sync"?"Syncing…":"🔗 Sync recordings"}</button>
+        <button onClick={coach} disabled={!!busy} className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm disabled:opacity-40">{busy==="coach"?"Coaching…":"🎯 Coach today's calls"}</button>
+      </div>
+      {msg && <div className="text-sm text-slate-600">{msg}</div>}
+    </div>
+  );
+}
+
 /* ============ CLOSING PIPELINE (meetings / follow-ups) ============ */
 function isClosed_(status){ return CLOSED_STATUSES.some(function(s){ return String(status||"").toLowerCase()===s.toLowerCase(); }); }
 
@@ -601,7 +632,10 @@ function AdminView({leads,interns,stats,refresh,notify}){
         <TeamUpcoming leads={leads}/>
       </React.Fragment>}
 
-      {section==="pipeline" && <MeetingsPipeline leads={leads} refresh={refresh} notify={notify}/>}
+      {section==="pipeline" && <React.Fragment>
+        <RecordingsPanel notify={notify} refresh={refresh}/>
+        <MeetingsPipeline leads={leads} refresh={refresh} notify={notify}/>
+      </React.Fragment>}
 
       {section==="team" && <TeamManager interns={interns} refresh={refresh} notify={notify}/>}
 
@@ -1254,6 +1288,17 @@ function CallCard({lead,user,position,total,onPrev,onNext,onSaved,notify}){
             <button onClick={rescheduleMeeting} className="px-2 py-1 rounded-lg bg-white border text-xs">Reschedule</button>
             <button onClick={cancelMeeting} className="px-2 py-1 rounded-lg bg-white border text-xs text-red-600">Cancel meeting</button>
           </div>
+        </div>}
+
+      {lead.Recording &&
+        <div className="bg-slate-50 rounded-xl p-3 space-y-1">
+          <div className="text-xs font-semibold text-slate-400">Call recordings</div>
+          {String(lead.Recording).split("\n").filter(Boolean).map((u,i)=><a key={i} href={u} target="_blank" className="block text-sm text-indigo-600">▶ Recording {i+1}</a>)}
+        </div>}
+      {lead.Coaching &&
+        <div className="bg-indigo-50 rounded-xl p-3 max-h-56 overflow-y-auto no-scrollbar">
+          <div className="text-xs font-semibold text-indigo-400 mb-1">🎯 AI coaching</div>
+          <div className="text-sm text-slate-700 whitespace-pre-wrap">{lead.Coaching}</div>
         </div>}
 
       {notesHistory &&

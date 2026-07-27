@@ -262,6 +262,14 @@ function doGet(e) {
 }
 
 function doPost(e) {
+  // Writes are submitted as a hidden form (payload field) targeting an iframe.
+  // Form submits aren't subject to CORS, so they work cross-origin even when
+  // Apps Script's fetch/redirect CORS is broken after a redeploy.
+  if (e && e.parameter && e.parameter.payload) {
+    let pb = {};
+    try { pb = JSON.parse(e.parameter.payload); } catch (err) { return json_({ ok: false, error: 'Bad JSON' }); }
+    return handleWrite_(pb);
+  }
   let body = {};
   try { body = JSON.parse((e && e.postData && e.postData.contents) || '{}'); }
   catch (err) { return json_({ ok: false, error: 'Bad JSON' }); }

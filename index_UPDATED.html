@@ -40,17 +40,25 @@ const IDLE_MS = 120000;   // 2 minutes
 
 /* ================== API ================== */
 async function apiGet(action){ const r = await fetch(API_URL + "?action=" + action); return r.json(); }
-async function apiPost(payload){
-  // Small writes go via GET (?payload=) — cross-origin GET is reliable, while
-  // Apps Script's cross-origin POST redirect can lose its CORS header after a
-  // redeploy (which was making Save hang). Big payloads (bulk import) use POST.
-  const q="payload="+encodeURIComponent(JSON.stringify(payload));
-  if(q.length < 7000){
-    const r = await fetch(API_URL + "?" + q);
-    return r.json();
-  }
-  const r = await fetch(API_URL, { method:"POST", headers:{ "Content-Type":"text/plain;charset=utf-8" }, body:JSON.stringify(payload) });
-  return r.json();
+let _rfN=0;
+// Writes go via a hidden form submitted into a hidden iframe. Form submissions
+// aren't subject to CORS (unlike fetch), so this keeps working even when Apps
+// Script's cross-origin fetch/CORS breaks after a redeploy (which was making
+// Save hang). The response isn't readable cross-origin, so we resolve {ok:true}
+// once the write has loaded, and the app's refresh() re-reads the real data.
+function apiPost(payload){
+  return new Promise(function(resolve){
+    const name="rf_"+(++_rfN)+"_"+Date.now();
+    const iframe=document.createElement("iframe"); iframe.name=name; iframe.style.display="none"; document.body.appendChild(iframe);
+    const form=document.createElement("form"); form.method="POST"; form.action=API_URL; form.target=name; form.style.display="none";
+    const inp=document.createElement("input"); inp.type="hidden"; inp.name="payload"; inp.value=JSON.stringify(payload); form.appendChild(inp);
+    document.body.appendChild(form);
+    let done=false;
+    function finish(){ if(done) return; done=true; resolve({ok:true}); setTimeout(function(){ try{form.remove();}catch(e){} try{iframe.remove();}catch(e){} }, 500); }
+    try{ form.submit(); }catch(e){ finish(); return; }
+    iframe.addEventListener("load", finish);   // fires when the write's response loads
+    setTimeout(finish, 9000);                  // safety timeout
+  });
 }
 
 /* ================== CSV ================== */

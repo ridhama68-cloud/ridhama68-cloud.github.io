@@ -88,7 +88,7 @@ const LEAD_HEADERS = [
   'Internal Rating','Status','Assigned To','Notes','Meeting Date','Meeting Time',
   'Last Follow-up Date','Follow-up Count','Conflict Flag','DayBefore Sent',
   '1Hr Sent','30Min Sent','Followup Date','Followup Time','Followup Sent',
-  'Recording','Coaching','Rec Missing Reason'
+  'Recording','Coaching','Rec Missing Reason','Folder'
 ];
 
 // Session log (intern time tracking). Auto-created — no manual sheet work.
@@ -180,7 +180,134 @@ function removeIntern_(name) {
   for (let i = names.length - 1; i >= 0; i--) {
     if (String(names[i][0]).trim().toLowerCase() === name.toLowerCase()) sh.deleteRow(i + 2);
   }
+  // Send any leads that were assigned to this person back to the Unassigned pool
+  // so they show up in the "New / Unassigned" filter and can be redistributed.
+  if (name) {
+    const lsh = leadsSheet_();
+    const idx = headerIndex_(lsh);
+    const col = idx['Assigned To'];
+    if (col !== undefined && lsh.getLastRow() >= 2) {
+      const rng = lsh.getRange(2, col + 1, lsh.getLastRow() - 1, 1);
+      const vals = rng.getValues();
+      let changed = false;
+      for (let r = 0; r < vals.length; r++) {
+        if (String(vals[r][0]).trim().toLowerCase() === name.toLowerCase()) { vals[r][0] = ''; changed = true; }
+      }
+      if (changed) rng.setValues(vals);
+    }
+  }
   return readInterns_();
+}
+// Edit an existing member's name and/or email (keyed by their current name).
+// If the name changes, every lead currently assigned to the old name is
+// reassigned to the new name so nothing gets orphaned.
+function editIntern_(oldName, newName, email) {
+  oldName = String(oldName || '').trim();
+  newName = String(newName || '').trim();
+  email = String(email || '').trim();
+  if (!oldName || !newName) return readInterns_();
+  const sh = internsSheetEnsure_();
+  const last = sh.getLastRow();
+  if (last < 2) return readInterns_();
+  const rows = sh.getRange(2, 1, last - 1, 2).getValues();
+  // Guard: if renaming to a name that already belongs to a DIFFERENT member, bail.
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][0]).trim().toLowerCase() === newName.toLowerCase()
+        && String(rows[i][0]).trim().toLowerCase() !== oldName.toLowerCase()) {
+      throw new Error('A member named "' + newName + '" already exists.');
+    }
+  }
+  let found = false;
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][0]).trim().toLowerCase() === oldName.toLowerCase()) {
+      sh.getRange(i + 2, 1).setValue(newName);
+      sh.getRange(i + 2, 2).setValue(email);
+      found = true;
+    }
+  }
+  if (!found) return readInterns_();
+  // Reassign leads if the name actually changed.
+  if (newName.toLowerCase() !== oldName.toLowerCase()) {
+    const lsh = leadsSheet_();
+    const idx = headerIndex_(lsh);
+    const col = idx['Assigned To'];
+    if (col !== undefined && lsh.getLastRow() >= 2) {
+      const rng = lsh.getRange(2, col + 1, lsh.getLastRow() - 1, 1);
+      const vals = rng.getValues();
+      let changed = false;
+      for (let r = 0; r < vals.length; r++) {
+        if (String(vals[r][0]).trim().toLowerCase() === oldName.toLowerCase()) { vals[r][0] = newName; changed = true; }
+      }
+      if (changed) rng.setValues(vals);
+    }
+  }
+  return readInterns_();
+}
+
+/* ================== DEVICE APPROVAL (intern login 2-factor) ==================
+   Each browser generates a random device id. The FIRST time a device is used to
+   log in as a team member it is recorded as "pending" and blocked until an admin
+   approves it from the admin panel. Once approved, that device is trusted forever
+   (until revoked) and never asks again. The admin panel itself is NOT gated this
+   way — it uses the password. A single member may have many approved devices. */
+function devicesSheet_() { return ss_().getSheetByName('Devices'); }
+function devicesSheetEnsure_() {
+  let sh = ss_().getSheetByName('Devices');
+  if (!sh) { sh = ss_().insertSheet('Devices'); sh.getRange(1, 1, 1, 7).setValues([['Name','DeviceID','Status','IP','UserAgent','Requested','Decided']]); }
+  else if (sh.getLastRow() < 1) { sh.getRange(1, 1, 1, 7).setValues([['Name','DeviceID','Status','IP','UserAgent','Requested','Decided']]); }
+  return sh;
+}
+function readDevices_() {
+  const sh = devicesSheet_();
+  if (!sh || sh.getLastRow() < 2) return [];
+  const vals = sh.getRange(2, 1, sh.getLastRow() - 1, 7).getValues();
+  return vals.filter(function (r) { return r[1]; }).map(function (r) {
+    return { name:String(r[0]).trim(), deviceId:String(r[1]).trim(), status:String(r[2]||'pending').trim(),
+             ip:String(r[3]||'').trim(), userAgent:String(r[4]||'').trim(),
+             requested:String(r[5]||''), decided:String(r[6]||'') };
+  });
+}
+function deviceRowIndex_(sh, deviceId) {
+  const last = sh.getLastRow();
+  if (last < 2) return -1;
+  const ids = sh.getRange(2, 2, last - 1, 1).getValues();
+  for (let i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]).trim() === String(deviceId).trim()) return i + 2;
+  }
+  return -1;
+}
+// Called by an intern's browser on login. Returns the device's status; if the
+// device is unknown it is registered as pending and 'pending' is returned.
+function deviceCheck_(name, deviceId, ip, ua) {
+  deviceId = String(deviceId || '').trim();
+  if (!deviceId) return { status:'denied' };
+  const sh = devicesSheetEnsure_();
+  const row = deviceRowIndex_(sh, deviceId);
+  if (row > 0) {
+    const cur = String(sh.getRange(row, 3).getValue() || 'pending').trim().toLowerCase();
+    // keep the latest name/ip so the admin sees who is using it
+    sh.getRange(row, 1).setValue(String(name || '').trim());
+    if (ip) sh.getRange(row, 4).setValue(String(ip).trim());
+    return { status: cur };
+  }
+  sh.appendRow([String(name||'').trim(), deviceId, 'pending', String(ip||'').trim(), String(ua||'').trim(), new Date().toISOString(), '']);
+  return { status:'pending' };
+}
+function deviceStatus_(deviceId) {
+  const list = readDevices_().filter(function (d) { return d.deviceId === String(deviceId).trim(); });
+  return { status: list.length ? list[0].status : 'none' };
+}
+function setDeviceStatus_(deviceId, status) {
+  const sh = devicesSheetEnsure_();
+  const row = deviceRowIndex_(sh, deviceId);
+  if (row > 0) { sh.getRange(row, 3).setValue(status); sh.getRange(row, 7).setValue(new Date().toISOString()); }
+  return readDevices_();
+}
+function revokeDevice_(deviceId) {
+  const sh = devicesSheetEnsure_();
+  const row = deviceRowIndex_(sh, deviceId);
+  if (row > 0) sh.deleteRow(row);
+  return readDevices_();
 }
 
 // ---- One-time self-heal: force date/time columns to plain-text so Google
@@ -214,10 +341,32 @@ function repairPhones_() {
   if (changed) rng.setValues(vals);
 }
 
+// One-time cleanup: strip the +91 / 91 country code from every existing Phone,
+// leaving clean 10-digit numbers (WhatsApp links re-add 91 automatically).
+function cleanExistingPhones_() {
+  const sh = leadsSheet_();
+  const idx = headerIndex_(sh);
+  if (idx['Phone'] === undefined) return { changed: 0, total: 0 };
+  const last = sh.getLastRow();
+  if (last < 2) return { changed: 0, total: 0 };
+  const rng = sh.getRange(2, idx['Phone'] + 1, last - 1, 1);
+  rng.setNumberFormat('@');
+  const vals = rng.getValues();
+  let changed = 0;
+  for (let i = 0; i < vals.length; i++) {
+    const before = vals[i][0];
+    if (before === '' || before === null) continue;
+    const after = sanitizePhone_(before);
+    if (String(after) !== String(before)) { vals[i][0] = after; changed++; }
+  }
+  if (changed) rng.setValues(vals);
+  return { changed: changed, total: vals.length };
+}
+
 function ensureSetup_() {
   const props = PropertiesService.getScriptProperties();
-  if (props.getProperty('FMT_SET_V3') === '1') return;
-  try { ensureTextFormats_(); repairPhones_(); props.setProperty('FMT_SET_V3', '1'); } catch (e) { Logger.log('fmt setup: ' + e); }
+  if (props.getProperty('FMT_SET_V4') === '1') return;
+  try { ensureColumns_(leadsSheet_(), ['Folder']); ensureTextFormats_(); repairPhones_(); props.setProperty('FMT_SET_V4', '1'); } catch (e) { Logger.log('fmt setup: ' + e); }
 }
 
 // ---- Accurate cumulative stats (per intern), incremented as calls are logged.
@@ -255,6 +404,7 @@ function doGet(e) {
     if (action === 'getStats')    return json_({ ok: true, stats: apiGetStats_() });
     if (action === 'getSessions') return json_({ ok: true, sessions: getSessions_((e && e.parameter && e.parameter.date) || '') });
     if (action === 'getDailyCalls') return json_({ ok: true, daily: getDaily_() });
+    if (action === 'getDevices')  return json_({ ok: true, devices: readDevices_() });
     return json_({ ok: false, error: 'Unknown action: ' + action });
   } catch (err) {
     return json_({ ok: false, error: String(err) });
@@ -285,6 +435,7 @@ function handleWrite_(body) {
     ensureSetup_();
     switch (action) {
       case 'upsert':       return json_({ ok: true, lead: upsertLead_(body.lead, body.logStat) });
+      case 'cleanPhones':  return json_(Object.assign({ ok: true }, cleanExistingPhones_()));
       case 'bulkImport':   return json_(Object.assign({ ok: true }, bulkImport_(body.leads || [], body.updateExisting)));
       case 'bulkAssign':   return json_({ ok: true, assigned: bulkAssign_(body) });
       case 'bulkField':    return json_({ ok: true, updated: bulkField_(body) });
@@ -292,7 +443,14 @@ function handleWrite_(body) {
       case 'clearAll':     return json_({ ok: true, cleared: clearAll_() });
       case 'saveStats':    return json_({ ok: true, saved: saveStats_(body.stats) });
       case 'addIntern':    return json_({ ok: true, interns: addIntern_(body.name, body.email) });
+      case 'editIntern':   return json_({ ok: true, interns: editIntern_(body.oldName, body.name, body.email) });
       case 'removeIntern': return json_({ ok: true, interns: removeIntern_(body.name) });
+      // ---- Device approval (intern login 2-factor) ----
+      case 'deviceCheck':   return json_(Object.assign({ ok: true }, deviceCheck_(body.name, body.deviceId, body.ip, body.userAgent)));
+      case 'deviceStatus':  return json_(Object.assign({ ok: true }, deviceStatus_(body.deviceId)));
+      case 'approveDevice': return json_({ ok: true, devices: setDeviceStatus_(body.deviceId, 'approved') });
+      case 'denyDevice':    return json_({ ok: true, devices: setDeviceStatus_(body.deviceId, 'denied') });
+      case 'revokeDevice':  return json_({ ok: true, devices: revokeDevice_(body.deviceId) });
       case 'attachRecordings': return json_(Object.assign({ ok: true }, attachRecordings_()));
       case 'coachCalls':       return json_(Object.assign({ ok: true }, coachCalls_(body.onlyToday !== false)));
       // ---- Intern time tracking + logout reconciliation ----
@@ -379,8 +537,18 @@ function upsertLead_(lead, logStat) {
     sh.appendRow(rowArr);
   }
   const stored = objFromRow_(rowArr, idx);
-  try { syncCalendar_(stored); } catch (e) { Logger.log('cal sync: ' + e); }
-  try { maybeSendDoctorBookingEmail_(stored); } catch (e) { Logger.log('doc booking email: ' + e); }
+  // Only touch Calendar/Gmail (slow, ~2-4s) when the meeting actually changed.
+  // Plain note/status-only saves skip these entirely so the write returns fast
+  // and the cross-origin redirect doesn't intermittently drop ("Failed to fetch").
+  const prev = found ? objFromRow_(found.current, idx) : null;
+  const meetingChanged = !prev
+    || String(prev['Status'] || '')       !== String(stored['Status'] || '')
+    || String(prev['Meeting Date'] || '') !== String(stored['Meeting Date'] || '')
+    || String(prev['Meeting Time'] || '') !== String(stored['Meeting Time'] || '');
+  if (meetingChanged) {
+    try { syncCalendar_(stored); } catch (e) { Logger.log('cal sync: ' + e); }
+    try { maybeSendDoctorBookingEmail_(stored); } catch (e) { Logger.log('doc booking email: ' + e); }
+  }
   if (logStat) {
     try { bumpStat_(logStat.intern, logStat.outcome); } catch (e) { Logger.log('stat: ' + e); }
     try { bumpDaily_(logStat.intern, logStat.outcome); } catch (e) { Logger.log('daily: ' + e); }
@@ -444,7 +612,10 @@ function ensureId_(lead) {
 // hand-typed "+91..." phone number never turns into #ERROR!.
 function sanitizePhone_(v) {
   if (v === undefined || v === null) return v;
-  return String(v).trim().replace(/^[+=\-@]+/, '');
+  var s = String(v).trim().replace(/^[+=\-@]+/, '');   // drop leading formula chars (+ = - @)
+  var d = s.replace(/\D/g, '');                        // digits only
+  if (d.length === 12 && d.slice(0, 2) === '91') d = d.slice(2);   // strip +91 / 91 country code
+  return d || s;                                       // clean 10-digit number (fallback to original if empty)
 }
 
 function findRowById_(sh, idx, id) {
@@ -514,7 +685,7 @@ function bulkImport_(leads, updateExisting) {
     if (l['Phone'] !== undefined) l['Phone'] = sanitizePhone_(l['Phone']);
     if (!l.Timestamp) l.Timestamp = new Date();
     if (!l.Status) l.Status = 'New';
-    if (!l['Assigned To']) l['Assigned To'] = 'Team';   // land in owner's account first
+    if (!l['Assigned To']) l['Assigned To'] = '';   // land Unassigned — admin distributes from the "New / Unassigned" filter
     toAppend.push(buildRowArray_(l, idx, null));
     imported++;
   });

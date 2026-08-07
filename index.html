@@ -1397,12 +1397,15 @@ function pipeStage(l){
 function PipelineBoard({leads,refresh,notify,members}){
   const [cat,setCat]=useState("All");
   const [who,setWho]=useState("All");
+  const [city,setCity]=useState("All");
   const [drag,setDrag]=useState(null);
   const [book,setBook]=useState(null);
   const [dt,setDt]=useState({date:todayISO(),time:"11:00"});
   const cats=useMemo(function(){ const s={}; leads.forEach(function(l){ const f=String(l.Folder||"").trim(); if(f) s[f]=1; }); return Object.keys(s).sort(); },[leads]);
+  const cityList=useMemo(function(){ const s={}; leads.forEach(function(l){ const c=cityGroup(l.City); if(c) s[c]=1; }); return Object.keys(s).sort(); },[leads]);
   const scoped=leads.filter(function(l){
     if(cat!=="All" && String(l.Folder||"").trim()!==cat) return false;
+    if(city!=="All" && cityGroup(l.City)!==city) return false;
     if(who!=="All" && String(l["Assigned To"]||"").trim().toLowerCase()!==who.toLowerCase()) return false;
     return true;
   });
@@ -1425,7 +1428,9 @@ function PipelineBoard({leads,refresh,notify,members}){
         {members && members.length>0 &&
           <select value={who} onChange={e=>setWho(e.target.value)} className="border rounded-lg px-2 py-1 text-sm"><option value="All">All members</option>{members.map(function(m){ return <option key={m}>{m}</option>; })}</select>}
         {cats.length>0 &&
-          <select value={cat} onChange={e=>setCat(e.target.value)} className="border rounded-lg px-2 py-1 text-sm"><option value="All">All categories</option>{cats.map(function(c){ return <option key={c}>{c}</option>; })}</select>}
+          <select value={cat} onChange={e=>setCat(e.target.value)} className="border rounded-lg px-2 py-1 text-sm"><option value="All">All niches</option>{cats.map(function(c){ return <option key={c}>{c}</option>; })}</select>}
+        {cityList.length>0 &&
+          <select value={city} onChange={e=>setCity(e.target.value)} className="border rounded-lg px-2 py-1 text-sm"><option value="All">All cities</option>{cityList.map(function(c){ return <option key={c}>{c}</option>; })}</select>}
         <div className="text-[11px] text-slate-400 w-full sm:w-auto">Drag a card between columns, or use “Move to…”. Closed = won. Dead leads are hidden.</div>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-2 items-start">
@@ -2163,7 +2168,7 @@ function isFresh(l){
   return inSet && String(l["Last Follow-up Date"]||"").indexOf(todayISO())<0;
 }
 
-function InternFilters({mine,filter,setFilter,fday,setFday,sortBy,setSortBy}){
+function InternFilters({mine,sel,toggleChip,fday,setFday,sortBy,setSortBy}){
   const cs=function(name){ return mine.filter(function(l){ return statusOf(l).toLowerCase()===name.toLowerCase(); }).length; };
   const chips=[
     ["fresh","🔥 Fresh today", mine.filter(isFresh).length],
@@ -2181,10 +2186,11 @@ function InternFilters({mine,filter,setFilter,fday,setFday,sortBy,setSortBy}){
   ];
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap gap-1.5 items-center">
+        <span className="text-[11px] text-slate-400">Status (tap several):</span>
         {chips.map(function(c){
-          const active=!fday && filter===c[0];
-          return <button key={c[0]} onClick={function(){ setFday(""); setFilter(c[0]); }}
+          const active=!fday && sel.indexOf(c[0])>=0;
+          return <button key={c[0]} onClick={function(){ toggleChip(c[0]); }}
             className={"px-2.5 py-1 rounded-full text-xs border "+(active?"bg-indigo-600 text-white border-indigo-600":"bg-white border-slate-200 text-slate-600")}>
             {c[1]} <span className={active?"opacity-90":"text-slate-400"}>{c[2]}</span></button>;
         })}
@@ -2242,28 +2248,47 @@ function InternUpload({user,refresh,notify}){
 
 function InternView({user,leads,stats,refresh,notify,actor}){
   const [mode,setMode]=useState("call");
-  const [filter,setFilter]=useState("fresh");    // fresh | all | <status>
+  const [sel,setSel]=useState(["fresh"]);        // multi-select: ["fresh"] | ["all"] | [status,...]
   const [fday,setFday]=useState("");             // "worked on" date (yyyy-mm-dd)
   const [cat,setCat]=useState(function(){ try{ return localStorage.getItem("reactivify.cat."+user)||"All"; }catch(e){ return "All"; } });  // Category (Folder) filter — persisted per user
   useEffect(function(){ try{ localStorage.setItem("reactivify.cat."+user, cat); }catch(e){} },[cat,user]);
+  const [city,setCity]=useState(function(){ try{ return localStorage.getItem("reactivify.city."+user)||"All"; }catch(e){ return "All"; } });  // City filter — persisted per user
+  useEffect(function(){ try{ localStorage.setItem("reactivify.city."+user, city); }catch(e){} },[city,user]);
   const mine=useMemo(()=>leads.filter(l=>String(l["Assigned To"]||"").trim().toLowerCase()===String(user).toLowerCase()),[leads,user]);
   // Category counts (from each lead's tag) so school / physio / Australia stay separate in the dialing queue.
   const categories=useMemo(function(){ const set={}; mine.forEach(function(l){ const f=String(l.Folder||"").trim(); if(f) set[f]=(set[f]||0)+1; }); return Object.keys(set).sort().map(function(k){ return [k,set[k]]; }); },[mine]);
   useEffect(function(){ if(cat!=="All" && !categories.some(function(c){ return c[0]===cat; })) setCat("All"); },[categories]);  // saved category gone → fall back to All
-  const mineCat=useMemo(function(){ return cat==="All"?mine:mine.filter(function(l){ return String(l.Folder||"").trim()===cat; }); },[mine,cat]);
+  const cities=useMemo(function(){ const set={}; mine.forEach(function(l){ const c=cityGroup(l.City); if(c) set[c]=(set[c]||0)+1; }); return Object.keys(set).sort().map(function(k){ return [k,set[k]]; }); },[mine]);
+  useEffect(function(){ if(city!=="All" && !cities.some(function(c){ return c[0]===city; })) setCity("All"); },[cities]);
+  const mineCat=useMemo(function(){ return mine.filter(function(l){
+    if(cat!=="All" && String(l.Folder||"").trim()!==cat) return false;
+    if(city!=="All" && cityGroup(l.City)!==city) return false;
+    return true;
+  }); },[mine,cat,city]);
+  // Toggle a status chip. "fresh"/"all" are exclusive; individual statuses stack (union).
+  function toggleChip(tok){
+    setFday("");
+    if(tok==="fresh"||tok==="all"){ setSel([tok]); return; }
+    setSel(function(cur){
+      let base=cur.filter(function(x){ return x!=="fresh"&&x!=="all"; });
+      base = base.indexOf(tok)>=0 ? base.filter(function(x){ return x!==tok; }) : base.concat([tok]);
+      return base.length? base : ["all"];
+    });
+  }
 
   const filtered=useMemo(function(){
     if(fday) return mineCat.filter(function(l){ return String(l["Last Follow-up Date"]||"").indexOf(fday)>=0; });
-    if(filter==="fresh") return mineCat.filter(isFresh);
-    if(filter==="all") return mineCat;
-    return mineCat.filter(function(l){ return statusOf(l).toLowerCase()===filter.toLowerCase(); });
-  },[mineCat,filter,fday]);
+    if(sel.indexOf("fresh")>=0) return mineCat.filter(isFresh);
+    if(sel.length===0 || sel.indexOf("all")>=0) return mineCat;
+    const set=sel.map(function(s){ return s.toLowerCase(); });
+    return mineCat.filter(function(l){ return set.indexOf(statusOf(l).toLowerCase())>=0; });
+  },[mineCat,sel,fday]);
 
   const [sortBy,setSortBy]=useState("smart");   // ✨ New-first daily order by default
   const sorted=useMemo(function(){ return sortLeads(filtered, sortBy); },[filtered,sortBy]);
 
   const [idx,setIdx]=useState(0);
-  useEffect(()=>{ setIdx(0); },[filter,fday,mode,sortBy,cat]);
+  useEffect(()=>{ setIdx(0); },[sel,fday,mode,sortBy,cat,city]);
   const active=sorted[idx];
   useEffect(()=>{ if(idx>=sorted.length) setIdx(Math.max(0,sorted.length-1)); },[sorted.length]);
 
@@ -2272,7 +2297,7 @@ function InternView({user,leads,stats,refresh,notify,actor}){
   // Live "calls I made today" counter — refetched whenever leads refresh (i.e. after each logged call).
   const [callsToday,setCallsToday]=useState(null);
   useEffect(function(){ apiGet("getDailyCalls").then(function(r){ if(r&&r.ok){ const day=todayISO(); const d=r.daily&&r.daily[day]&&r.daily[day][user]; setCallsToday(d?(d.calls||0):0); } }).catch(function(){}); },[user,leads]);
-  const emptyMsg = fday ? "No leads worked on that date." : (filter==="fresh" ? "All caught up for today. 🎉 Fresh leads reset tomorrow — or pick another filter above." : "No leads in this filter.");
+  const emptyMsg = fday ? "No leads worked on that date." : (sel.indexOf("fresh")>=0 ? "All caught up for today. 🎉 Fresh leads reset tomorrow — or pick another filter above." : "No leads in this filter.");
 
   return (
     <div className="p-4 max-w-2xl mx-auto space-y-4">
@@ -2290,11 +2315,17 @@ function InternView({user,leads,stats,refresh,notify,actor}){
       <InternUpload user={user} refresh={refresh} notify={notify}/>
       {categories.length>0 &&
         <div className="flex items-center gap-1.5 flex-wrap bg-white rounded-xl border border-slate-200 px-3 py-2">
-          <span className="text-xs text-slate-400 mr-1">📁 Category:</span>
+          <span className="text-xs text-slate-400 mr-1">📁 Niche:</span>
           <button onClick={()=>setCat("All")} className={"px-2.5 py-1 rounded-full text-xs "+(cat==="All"?"bg-slate-900 text-white":"bg-slate-100 text-slate-600")}>All ({mine.length})</button>
           {categories.map(function(c){ return <button key={c[0]} onClick={()=>setCat(c[0])} className={"px-2.5 py-1 rounded-full text-xs "+(cat===c[0]?"bg-purple-600 text-white":"bg-purple-50 text-purple-700 border border-purple-200")}>{c[0]} ({c[1]})</button>; })}
         </div>}
-      {mode!=="close" && mode!=="board" && <InternFilters mine={mineCat} filter={filter} setFilter={setFilter} fday={fday} setFday={setFday} sortBy={sortBy} setSortBy={setSortBy}/>}
+      {cities.length>0 &&
+        <div className="flex items-center gap-1.5 flex-wrap bg-white rounded-xl border border-slate-200 px-3 py-2">
+          <span className="text-xs text-slate-400 mr-1">📍 City:</span>
+          <button onClick={()=>setCity("All")} className={"px-2.5 py-1 rounded-full text-xs "+(city==="All"?"bg-slate-900 text-white":"bg-slate-100 text-slate-600")}>All</button>
+          {cities.map(function(c){ return <button key={c[0]} onClick={()=>setCity(c[0])} className={"px-2.5 py-1 rounded-full text-xs "+(city===c[0]?"bg-blue-600 text-white":"bg-blue-50 text-blue-700 border border-blue-200")}>{c[0]} ({c[1]})</button>; })}
+        </div>}
+      {mode!=="close" && mode!=="board" && <InternFilters mine={mineCat} sel={sel} toggleChip={toggleChip} fday={fday} setFday={setFday} sortBy={sortBy} setSortBy={setSortBy}/>}
       {mode==="board"
         ? <PipelineBoard leads={mine} refresh={refresh} notify={notify}/>
         : mode==="list"

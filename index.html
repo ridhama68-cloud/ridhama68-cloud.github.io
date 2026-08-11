@@ -1482,6 +1482,10 @@ function FunnelDashboard({leads,internNames}){
   useEffect(function(){ try{ localStorage.setItem("reactivify.dashRange", JSON.stringify(range)); }catch(e){} },[range]);
   const [ratio,setRatio]=useState(function(){ try{ return JSON.parse(localStorage.getItem("reactivify.dashRatio")||"null")||{from:"Dialed",to:"Closed"}; }catch(e){ return {from:"Dialed",to:"Closed"}; } });
   useEffect(function(){ try{ localStorage.setItem("reactivify.dashRatio", JSON.stringify(ratio)); }catch(e){} },[ratio]);
+  const [dcat,setDcat]=useState(function(){ try{ return localStorage.getItem("reactivify.dashCat")||"All"; }catch(e){ return "All"; } });
+  useEffect(function(){ try{ localStorage.setItem("reactivify.dashCat", dcat); }catch(e){} },[dcat]);
+  const [dcity,setDcity]=useState(function(){ try{ return localStorage.getItem("reactivify.dashCity")||"All"; }catch(e){ return "All"; } });
+  useEffect(function(){ try{ localStorage.setItem("reactivify.dashCity", dcity); }catch(e){} },[dcity]);
   function setPreset(mode){
     const to=todayISO(); const d=new Date(); let from=to;
     if(mode==="7d"){ d.setDate(d.getDate()-6); from=isoOf(d); }
@@ -1492,11 +1496,19 @@ function FunnelDashboard({leads,internNames}){
   }
   const from=range.from, to=range.to;
   const inRange=function(ds){ ds=String(ds||"").slice(0,10); return ds && ds>=from && ds<=to; };
+  // Niche + City filters — see the funnel for one category / city at a time.
+  const nicheList=(function(){ const s={}; leads.forEach(function(l){ const f=String(l.Folder||"").trim(); if(f) s[f]=1; }); return Object.keys(s).sort(); })();
+  const cityL=(function(){ const s={}; leads.forEach(function(l){ const c=cityGroup(l.City); if(c) s[c]=1; }); return Object.keys(s).sort(); })();
+  const scoped=leads.filter(function(l){
+    if(dcat!=="All" && String(l.Folder||"").trim()!==dcat) return false;
+    if(dcity!=="All" && cityGroup(l.City)!==dcity) return false;
+    return true;
+  });
   // Count of UNIQUE leads that reached each stage (stamp date within range).
   function count(list,col){ return list.filter(function(l){ return inRange(l[col]); }).length; }
-  const team={}; FUNNEL_STAGES.forEach(function(s){ team[s[0]]=count(leads,s[1]); });
+  const team={}; FUNNEL_STAGES.forEach(function(s){ team[s[0]]=count(scoped,s[1]); });
   const rows=internNames.map(function(name){
-    const mine=leads.filter(function(l){ return String(l["Assigned To"]||"").trim().toLowerCase()===name.toLowerCase(); });
+    const mine=scoped.filter(function(l){ return String(l["Assigned To"]||"").trim().toLowerCase()===name.toLowerCase(); });
     const o={name:name}; FUNNEL_STAGES.forEach(function(s){ o[s[0]]=count(mine,s[1]); }); return o;
   });
   const stageCol=function(n){ const f=FUNNEL_STAGES.find(function(s){ return s[0]===n; }); return f?f[1]:"Timestamp"; };
@@ -1518,6 +1530,11 @@ function FunnelDashboard({leads,internNames}){
         <input type="date" value={from} onChange={e=>setRange({mode:"custom",from:e.target.value,to:to})} className="border rounded-lg px-2 py-1 text-xs"/>
         <span>to</span>
         <input type="date" value={to} onChange={e=>setRange({mode:"custom",from:from,to:e.target.value})} className="border rounded-lg px-2 py-1 text-xs"/>
+        {nicheList.length>0 &&
+          <select value={dcat} onChange={e=>setDcat(e.target.value)} className="border rounded-lg px-2 py-1 text-xs"><option value="All">📁 All niches</option>{nicheList.map(function(n){ return <option key={n}>{n}</option>; })}</select>}
+        {cityL.length>0 &&
+          <select value={dcity} onChange={e=>setDcity(e.target.value)} className="border rounded-lg px-2 py-1 text-xs"><option value="All">📍 All cities</option>{cityL.map(function(c){ return <option key={c}>{c}</option>; })}</select>}
+        {(dcat!=="All"||dcity!=="All") && <button onClick={()=>{setDcat("All");setDcity("All");}} className="text-indigo-600">clear</button>}
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2">
         {FUNNEL_STAGES.map(function(s){ return <div key={s[0]} className="rounded-xl border border-slate-100 bg-slate-50 p-3"><div className={"text-2xl font-bold "+s[2]}>{team[s[0]]}</div><div className="text-[11px] text-slate-500 mt-0.5">{s[0]}</div></div>; })}

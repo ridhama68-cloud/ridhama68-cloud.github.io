@@ -41,7 +41,7 @@ const NON_CONVO = ["Not Answering","Owner Not Available","Dr Not Available"];
 const IDLE_MS = 120000;   // 2 minutes
 
 /* ================== API ================== */
-async function apiGet(action){ const r = await fetch(API_URL + "?action=" + action); return r.json(); }
+async function apiGet(action, extraQuery){ const r = await fetch(API_URL + "?action=" + action + (extraQuery||"")); return r.json(); }
 // Writes use a plain text/plain POST (a CORS "simple request", no preflight).
 // Apps Script answers /exec with a 302 to googleusercontent, and that redirect
 // occasionally returns WITHOUT the CORS header -> fetch throws "Failed to fetch"
@@ -432,12 +432,17 @@ function App(){
   const refresh=useCallback(async()=>{
     if(configMissing) return;
     setLoading(true);
+    // Interns only ever look at their own leads -- ask the server for just
+    // those instead of downloading everyone's and filtering here. Admin
+    // ("Team") still needs the full picture, so it keeps fetching everything.
+    const internOnly = user && user!=="Team";
+    const listQuery = internOnly ? ("&assignedTo="+encodeURIComponent(user)) : "";
     // Speed: fire all four loads in parallel AND apply each as it lands, instead of
     // waiting on Promise.all -- stats/sessions/devices are small and usually land
     // in well under a second; the leads list is the one that can take much longer
     // at this lead count, and there's no reason the other three should wait on it.
     const tasks = [
-      apiGet("list").then(function(l){ if(l.ok){ setLeads(l.leads||[]); setInterns(l.interns||[]);
+      apiGet("list", listQuery).then(function(l){ if(l.ok){ setLeads(l.leads||[]); setInterns(l.interns||[]);
         try{ localStorage.setItem("reactivify_interns", JSON.stringify(l.interns||[])); }catch(e){} } }),
       apiGet("getStats").then(function(st){ if(st.ok) setStats(st.stats||{}); }),
       apiGet("getSessions").then(function(se){ if(se.ok) setSessions(se.sessions||[]); }),
@@ -445,7 +450,7 @@ function App(){
     ].map(function(p){ return p.catch(function(e){ notify("Load failed: "+e); }); });
     await Promise.all(tasks);
     setLoading(false);
-  },[configMissing]);
+  },[configMissing,user]);
 
   useEffect(()=>{ if(user) refresh(); },[user,refresh]);
   // Re-run the device gate on every login/switch (admin is exempt in render).

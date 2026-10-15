@@ -398,6 +398,15 @@ function App(){
   // Intern work-session (clock-in / idle / logout). Inert for admin & logged-out.
   const session = useWorkSession(user||"", !!user && user!=="Team");
 
+  const refreshLight=useCallback(async()=>{
+    if(configMissing) return;
+    const tasks = [
+      apiGet("getStats").then(function(st){ if(st.ok) setStats(st.stats||{}); }),
+      apiGet("getSessions").then(function(se){ if(se.ok) setSessions(se.sessions||[]); }),
+      apiGet("getDevices").then(function(dv){ if(dv && dv.ok) setDevices(dv.devices||[]); })
+    ].map(function(p){ return p.catch(function(e){ notify("Load failed: "+e); }); });
+    await Promise.all(tasks);
+  },[configMissing]);
   const refresh=useCallback(async()=>{
     if(configMissing) return;
     setLoading(true);
@@ -825,7 +834,7 @@ function QuickSchedule({leads,user,refresh,notify}){
     setSaving(true); setMeetLink("");
     const res=await apiPost({action:"internalMeeting", title:title.trim(), email:email.trim(), date:dt.date, time:dt.time});
     setSaving(false);
-    if(res.ok){ setMeetLink(res.link||res.htmlLink||""); notify("Meeting created & invite sent ✓"); refresh(); }
+    if(res.ok){ setMeetLink(res.link||res.htmlLink||""); notify("Meeting created & invite sent ✓"); refreshLight(); }
     else notify("Failed: "+(res.error||"unknown"));
   }
 
@@ -835,7 +844,7 @@ function QuickSchedule({leads,user,refresh,notify}){
     const lead={Clinic:nc.clinic.trim(), Name:nc.name.trim(), Phone:nc.phone.trim(), Email:nc.email.trim(), Status:"New", "Assigned To": (user==="Team"?"Team":user)};
     const res=await apiPost({action:"upsert", lead});
     setSaving(false);
-    if(res.ok && res.lead){ setManualLead(res.lead); setLeadId(res.lead.ID); setEmail(res.lead.Email||""); setCreating(false); refresh(); }
+    if(res.ok && res.lead){ setManualLead(res.lead); setLeadId(res.lead.ID); setEmail(res.lead.Email||""); setCreating(false); refreshLight(); }
     else notify("Create failed: "+(res.error||"unknown"));
   }
 
@@ -847,7 +856,7 @@ function QuickSchedule({leads,user,refresh,notify}){
       : {ID:leadId, Email:email, Status:"Schedule Follow-up", "Followup Date":dt.date, "Followup Time":dt.time, "Followup Sent":""};
     const res=await apiPost({action:"upsert", lead:patch});
     setSaving(false);
-    if(res.ok){ notify(kind==="meeting"?"Meeting booked ✓":"Follow-up scheduled ✓"); setOpen(false); reset(); refresh(); }
+    if(res.ok){ notify(kind==="meeting"?"Meeting booked ✓":"Follow-up scheduled ✓"); setOpen(false); reset(); refreshLight(); }
     else notify("Failed: "+res.error);
   }
 
@@ -987,7 +996,7 @@ function CloseItem({item,refresh,notify}){
     setBusy(true);
     // dial:false — closing a meeting isn't a fresh dial, so it shouldn't inflate the dial count.
     const res=await apiPost({action:"upsert", lead:{ID:l.ID, Status:status}, logStat:{intern:l["Assigned To"]||"", outcome:status, dial:false}});
-    setBusy(false); if(res.ok){ notify("Closed: "+status); refresh(); } else notify("Failed: "+res.error);
+    setBusy(false); if(res.ok){ notify("Closed: "+status); refreshLight(); } else notify("Failed: "+res.error);
   }
   const [shown,setShown]=useState(false);
   async function markShowup(){
@@ -1003,7 +1012,7 @@ function CloseItem({item,refresh,notify}){
       ? {Status:"Meeting Booked","Meeting Date":dt.date,"Meeting Time":dt.time,"DayBefore Sent":"","1Hr Sent":"","30Min Sent":""}
       : {Status:"Schedule Follow-up","Followup Date":dt.date,"Followup Time":dt.time,"Followup Sent":""};
     const res=await apiPost({action:"upsert", lead:Object.assign({ID:l.ID},extra)});
-    setBusy(false); setResched(false); if(res.ok){ notify("Rescheduled"); refresh(); } else notify("Failed");
+    setBusy(false); setResched(false); if(res.ok){ notify("Rescheduled"); refreshLight(); } else notify("Failed");
   }
   async function cancelIt(){
     if(!confirm("Delete this "+item.type.toLowerCase()+"? It will be removed from the pipeline and the calendar (the lead stays).")) return;
@@ -1012,7 +1021,7 @@ function CloseItem({item,refresh,notify}){
       ? {Status:"Interested","Meeting Date":"","Meeting Time":""}
       : {Status:"Interested","Followup Date":"","Followup Time":"","Followup Sent":""};
     const res=await apiPost({action:"upsert", lead:Object.assign({ID:l.ID},extra)});
-    setBusy(false); if(res.ok){ notify("Deleted"); refresh(); } else notify("Failed");
+    setBusy(false); if(res.ok){ notify("Deleted"); refreshLight(); } else notify("Failed");
   }
   return (
     <div className="border-t border-slate-100 py-2 first:border-0">
@@ -1193,7 +1202,7 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
     if(!confirm("Assign all "+rows.length+" shown leads to "+assignAllWho+"?")) return;
     setBusy(true);
     const res=await apiPost({action:"bulkField", rows, field:"Assigned To", value:assignAllWho});
-    setBusy(false); notify(res.ok?("Assigned "+res.updated+" to "+assignAllWho):"Failed"); refresh();
+    setBusy(false); notify(res.ok?("Assigned "+res.updated+" to "+assignAllWho):"Failed"); refreshLight();
   }
 
   async function onFile(e){
@@ -1224,7 +1233,7 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
     if(!rows.length||!city) return;
     setBusy(true);
     const res=await apiPost({action:"bulkField", rows, field:"City", value:city});
-    setBusy(false); notify(res.ok?("Moved "+res.updated+" leads to "+city):"Failed"); setCityFilter(city); refresh();
+    setBusy(false); notify(res.ok?("Moved "+res.updated+" leads to "+city):"Failed"); setCityFilter(city); refreshLight();
   }
   async function setFolderForShown(folderName){
     folderName=String(folderName||"").trim();
@@ -1233,7 +1242,7 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
     if(!confirm('Tag all '+rows.length+' shown leads with folder "'+folderName+'"?')) return;
     setBusy(true);
     const res=await apiPost({action:"bulkField", rows, field:"Folder", value:folderName});
-    setBusy(false); notify(res.ok?("Tagged "+res.updated+" → 📁 "+folderName):"Failed"); setFolderFilter(folderName); refresh();
+    setBusy(false); notify(res.ok?("Tagged "+res.updated+" → 📁 "+folderName):"Failed"); setFolderFilter(folderName); refreshLight();
   }
   async function clearAll(){
     const c=prompt('This permanently deletes ALL leads. Type DELETE to confirm.');
@@ -1503,7 +1512,7 @@ function PipelineBoard({leads,refresh,notify,members}){
     else if(stage==="Showed up"){ if(!/meeting booked/i.test(l.Status||"")) p.lead.Status="Meeting Booked"; p.logStat={intern:l["Assigned To"]||"", outcome:"Showed Up", dial:false}; }
     else if(stage==="Closed"){ p.lead.Status="Landed"; p.logStat={intern:l["Assigned To"]||"", outcome:"Landed", dial:false}; }
     else if(stage==="Working"){ p.lead.Status="Interested"; }
-    const res=await apiPost(p); if(res.ok){ notify("→ "+stage); refresh(); } else notify("Failed: "+(res.error||""));
+    const res=await apiPost(p); if(res.ok){ notify("→ "+stage); refreshLight(); } else notify("Failed: "+(res.error||""));
   }
   function move(l,stage){ if(!stage||stage===pipeStage(l)) return; if(stage==="Meeting Booked"){ setDt({date:l["Meeting Date"]||todayISO(), time:l["Meeting Time"]||"11:00"}); setBook({lead:l}); } else apply(l,stage); }
   return (
@@ -1721,12 +1730,12 @@ function DuplicatesTool({leads,refresh,notify}){
       const g=groups[gi].slice().sort((a,b)=>score(b)-score(a));
       for(let i=1;i<g.length;i++){ await apiPost({action:"delete", id:g[i].ID}); }
     }
-    setBusy(false); notify("Removed "+dupCount+" duplicates"); refresh();
+    setBusy(false); notify("Removed "+dupCount+" duplicates"); refreshLight();
   }
   async function delOne(id){
     if(!confirm("Delete this duplicate record? (This can't be undone.)")) return;
     setBusy(true); const res=await apiPost({action:"delete", id}); setBusy(false);
-    notify(res.ok?"Deleted":"Failed"); refresh();
+    notify(res.ok?"Deleted":"Failed"); refreshLight();
   }
   if(!groups.length) return <div className="bg-white rounded-2xl border border-slate-200 p-4 text-sm text-slate-500">✓ No duplicate leads found.</div>;
   return (
@@ -1842,8 +1851,8 @@ function sortLeads(leads,by){
 
 function AdminLeadTable({leads,internNames,refresh,notify}){
   const [edit,setEdit]=useState(null);
-  async function assignOne(lead,who){ await apiPost({action:"bulkField", rows:[lead._row], field:"Assigned To", value:who}); notify("Assigned to "+who); refresh(); }
-  async function del(lead){ if(!confirm("Delete "+(lead.Clinic||lead.Name)+"?")) return; await apiPost({action:"delete", id:lead.ID}); notify("Deleted"); refresh(); }
+  async function assignOne(lead,who){ await apiPost({action:"bulkField", rows:[lead._row], field:"Assigned To", value:who}); notify("Assigned to "+who); refreshLight(); }
+  async function del(lead){ if(!confirm("Delete "+(lead.Clinic||lead.Name)+"?")) return; await apiPost({action:"delete", id:lead.ID}); notify("Deleted"); refreshLight(); }
   return (
     <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
       {edit && <EditLead lead={edit} onClose={()=>setEdit(null)} refresh={refresh} notify={notify}/>}
@@ -1897,7 +1906,7 @@ function EditLead({lead,onClose,refresh,notify}){
     else if(isFollow){ patch["Followup Date"]=dt.date; patch["Followup Time"]=dt.time; patch["Followup Sent"]=""; }
     const res=await apiPost({action:"upsert", lead:patch});
     setSaving(false);
-    if(res.ok){ notify(isMeeting?"Meeting saved ✓":isFollow?"Follow-up saved ✓":"Lead updated"); onClose(); refresh(); } else notify("Failed: "+res.error);
+    if(res.ok){ notify(isMeeting?"Meeting saved ✓":isFollow?"Follow-up saved ✓":"Lead updated"); onClose(); refreshLight(); } else notify("Failed: "+res.error);
   }
   return (
     <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4" onClick={onClose}>
@@ -1961,7 +1970,7 @@ function PriorityRating({lead,refresh,notify,label}){
     setBusy(true);
     const res=await apiPost({action:"upsert", lead:{ID:lead.ID, "Internal Rating": next}});
     setBusy(false);
-    if(res.ok){ notify(next?("Grade "+next):"Grade cleared"); refresh(); }
+    if(res.ok){ notify(next?("Grade "+next):"Grade cleared"); refreshLight(); }
     else { notify("Failed: "+(res.error||"")); setVal(prev); }
   }
   return (
@@ -2048,7 +2057,7 @@ function DeviceAccess({devices,refresh,notify}){
     setBusy(deviceId);
     const res=await apiPost({action, deviceId});
     setBusy("");
-    notify(res.ok?label:"Failed"); refresh();
+    notify(res.ok?label:"Failed"); refreshLight();
   }
   function when(s){ if(!s) return ""; const d=new Date(s); return isNaN(d)?"":d.toLocaleString(); }
   const Row=({d,children})=>(
@@ -2177,14 +2186,14 @@ function InternDetail({name,leads,internNames,stats,refresh,notify,onClose}){
     if(!rows.length){ notify("No leads"); return; }
     setBusy(true);
     const res=await apiPost({action:"bulkField", rows, field, value});
-    setBusy(false); notify(res.ok?(msg+" ("+res.updated+")"):"Failed"); refresh(); onClose();
+    setBusy(false); notify(res.ok?(msg+" ("+res.updated+")"):"Failed"); refreshLight(); onClose();
   }
   async function resetStats(){
     if(!confirm("Reset "+name+"’s call stats (dials/convos/meetings) to zero?")) return;
     const cur=Object.assign({},stats||{}); delete cur[name];
-    setBusy(true); await apiPost({action:"saveStats", stats:cur}); setBusy(false); notify("Stats reset for "+name); refresh(); onClose();
+    setBusy(true); await apiPost({action:"saveStats", stats:cur}); setBusy(false); notify("Stats reset for "+name); refreshLight(); onClose();
   }
-  async function del(l){ if(!confirm("Delete "+(l.Clinic||l.Name)+"?")) return; await apiPost({action:"delete", id:l.ID}); notify("Deleted"); refresh(); }
+  async function del(l){ if(!confirm("Delete "+(l.Clinic||l.Name)+"?")) return; await apiPost({action:"delete", id:l.ID}); notify("Deleted"); refreshLight(); }
   const stat=(label,v)=>(<div className="text-center px-2"><div className="text-lg font-bold">{v||0}</div><div className="text-[10px] uppercase text-slate-400">{label}</div></div>);
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
@@ -2492,7 +2501,7 @@ function InternListItem({l,refresh,notify,onEdit,actor}){
     if(statusChanged) payload.logStat={intern:l["Assigned To"]||"", outcome:pendingStatus};
     const res=await apiPost(payload);
     savingRef.current=false; setSaving(false);
-    if(res.ok){ setNote(""); setOpen(false); notify("Saved ✓"); refresh(); } else notify("Failed: "+(res.error||""));
+    if(res.ok){ setNote(""); setOpen(false); notify("Saved ✓"); refreshLight(); } else notify("Failed: "+(res.error||""));
   }
   // Safety-net autosave: only once BOTH a (changed) status AND a note are present.
   // Debounced so it doesn't fire mid-typing. Manual Save always works too.

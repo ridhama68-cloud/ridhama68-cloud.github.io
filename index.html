@@ -1127,10 +1127,13 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
   const fileRef=useRef();
   const internNames = interns.length?interns.map(i=>i.name):["Priya","Raj","Ananya"];
 
+  // "Leads for" niche picker: "All" = the full console; a niche narrows every list/count below to that niche only.
+  const scoped = useMemo(()=> folderFilter==="All" ? leads : leads.filter(l=>String(l.Folder||"").trim()===folderFilter),[leads,folderFilter]);
+  function pickNiche(v){ setFolderFilter(v); setCityFilter("All"); setAssignFilter("all"); setGradeFilter([]); }
   const cities = useMemo(()=>{
-    const set={}; leads.forEach(l=>{ const c=cityGroup(l.City); set[c]=(set[c]||0)+1; });
+    const set={}; scoped.forEach(l=>{ const c=cityGroup(l.City); set[c]=(set[c]||0)+1; });
     return Object.keys(set).sort();
-  },[leads]);
+  },[scoped]);
   const folders = useMemo(()=>{
     const set={}; leads.forEach(l=>{ const f=String(l.Folder||"").trim(); if(f) set[f]=(set[f]||0)+1; });
     return Object.keys(set).sort();
@@ -1247,6 +1250,15 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
       </React.Fragment>}
 
       {section==="leads" && <React.Fragment>
+      <div className="bg-white rounded-2xl border border-slate-200 p-3 flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium text-slate-700">Leads for:</span>
+        <select value={folderFilter} onChange={e=>pickNiche(e.target.value)} className="border rounded-lg px-3 py-2 text-sm font-medium">
+          <option value="All">All leads ({leads.length})</option>
+          {folders.map(f=><option key={f} value={f}>{f} ({leads.filter(l=>String(l.Folder||"").trim()===f).length})</option>)}
+        </select>
+        {folderFilter!=="All" && <span className="text-xs text-slate-500">Showing only {folderFilter} leads ({scoped.length})</span>}
+      </div>
+
       <QuickSchedule leads={leads} user="Team" refresh={refresh} notify={notify}/>
       <DuplicatesTool leads={leads} refresh={refresh} notify={notify}/>
 
@@ -1286,9 +1298,9 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
 
       {/* City tabs */}
       <div className="flex flex-wrap gap-2">
-        <CityTab label={"All ("+leads.length+")"} active={cityFilter==="All"} onClick={()=>setCityFilter("All")}/>
+        <CityTab label={"All ("+scoped.length+")"} active={cityFilter==="All"} onClick={()=>setCityFilter("All")}/>
         {cities.map(c=>{
-          const n=leads.filter(l=>cityGroup(l.City)===c).length;
+          const n=scoped.filter(l=>cityGroup(l.City)===c).length;
           return <CityTab key={c} label={c+" ("+n+")"} active={cityFilter===c} onClick={()=>setCityFilter(c)}/>;
         })}
       </div>
@@ -1296,16 +1308,16 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
       {/* Assignment filter — new uploads land here as "Unassigned" for you to distribute */}
       <div className="flex flex-wrap gap-2 items-center">
         <span className="text-xs text-slate-400 mr-1">Assigned:</span>
-        <button onClick={()=>setAssignFilter("all")} className={"px-3 py-1 rounded-full text-sm "+(assignFilter==="all"?"bg-slate-900 text-white":"bg-slate-100")}>All ({leads.length})</button>
-        <button onClick={()=>setAssignFilter("unassigned")} className={"px-3 py-1 rounded-full text-sm "+(assignFilter==="unassigned"?"bg-amber-500 text-white":"bg-amber-50 text-amber-700 border border-amber-200")}>🆕 New / Unassigned ({leads.filter(isPoolLead).length})</button>
+        <button onClick={()=>setAssignFilter("all")} className={"px-3 py-1 rounded-full text-sm "+(assignFilter==="all"?"bg-slate-900 text-white":"bg-slate-100")}>All ({scoped.length})</button>
+        <button onClick={()=>setAssignFilter("unassigned")} className={"px-3 py-1 rounded-full text-sm "+(assignFilter==="unassigned"?"bg-amber-500 text-white":"bg-amber-50 text-amber-700 border border-amber-200")}>🆕 New / Unassigned ({scoped.filter(isPoolLead).length})</button>
         {internNames.map(n=>{
-          const c=leads.filter(l=>String(l["Assigned To"]||"").trim().toLowerCase()===n.toLowerCase()).length;
+          const c=scoped.filter(l=>String(l["Assigned To"]||"").trim().toLowerCase()===n.toLowerCase()).length;
           return <button key={n} onClick={()=>setAssignFilter(n)} className={"px-3 py-1 rounded-full text-sm "+(assignFilter===n?"bg-indigo-600 text-white":"bg-slate-100")}>{n} ({c})</button>;
         })}
       </div>
 
       {/* Folder filter + tagger — group leads into named folders (e.g. Bangalore); shows as 📁 badge everywhere */}
-      <div className="flex flex-wrap gap-2 items-center">
+      {folderFilter==="All" && <div className="flex flex-wrap gap-2 items-center">
         <span className="text-xs text-slate-400 mr-1">📁 Category:</span>
         <button onClick={()=>setFolderFilter("All")} className={"px-3 py-1 rounded-full text-sm "+(folderFilter==="All"?"bg-slate-900 text-white":"bg-slate-100")}>All</button>
         {folders.map(f=>{
@@ -1315,7 +1327,7 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
         <span className="mx-1 text-slate-300">|</span>
         <span className="text-xs text-slate-500">Tag {shown.length} shown into folder:</span>
         <input placeholder="type name + Enter" onKeyDown={e=>{ if(e.key==="Enter"){ setFolderForShown(e.target.value); e.target.value=""; } }} className="border rounded px-2 py-1 text-sm w-40"/>
-      </div>
+      </div>}
 
       {cityFilter!=="All" &&
         <div className="flex items-center gap-2 text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
@@ -1330,12 +1342,12 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
       <div className="flex flex-wrap gap-2 items-center">
         <span className="text-xs text-slate-400 mr-1">Grade:</span>
         {GRADES.map(function(g){
-          const c=leads.filter(function(l){ return gradeOf(l)===g.k; }).length;
+          const c=scoped.filter(function(l){ return gradeOf(l)===g.k; }).length;
           const on=gradeFilter.indexOf(g.k)>=0;
           return <button key={g.k} onClick={()=>setGradeFilter(function(cur){ return cur.indexOf(g.k)>=0?cur.filter(function(x){ return x!==g.k; }):cur.concat([g.k]); })}
             className={"px-3 py-1 rounded-full text-sm border "+(on?g.chip:g.idle)}>{g.k} - {g.name} ({c})</button>;
         })}
-        {(function(){ const c=leads.filter(function(l){ return !gradeOf(l); }).length; const on=gradeFilter.indexOf("none")>=0;
+        {(function(){ const c=scoped.filter(function(l){ return !gradeOf(l); }).length; const on=gradeFilter.indexOf("none")>=0;
           return <button onClick={()=>setGradeFilter(function(cur){ return cur.indexOf("none")>=0?cur.filter(function(x){ return x!=="none"; }):cur.concat(["none"]); })}
             className={"px-3 py-1 rounded-full text-sm border "+(on?"bg-slate-700 text-white border-slate-700":"bg-slate-50 text-slate-600 border-slate-300")}>No grade ({c})</button>; })()}
         {gradeFilter.length>0 && <button onClick={()=>setGradeFilter([])} className="text-xs text-slate-500 underline">clear</button>}

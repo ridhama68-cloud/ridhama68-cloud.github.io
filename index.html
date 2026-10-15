@@ -100,29 +100,38 @@ function normHeader(h){ return String(h).toLowerCase().replace(/[_\s]+/g,""); }
 function mapHeaders(headers){
   const map={};
   headers.forEach((h,i)=>{ const n=normHeader(h);
-    if(["practicename","title","name","businessname"].includes(n)) map.name=i;
+    if(["practicename","title","name","businessname","companyname"].includes(n)) map.name=i;
+    else if(["ownerorcontactname","ownername","contactname"].includes(n)) map.owner=i;
     else if(["phone","phonenumber","mobile","contact"].includes(n)) map.phone=i;
-    else if(["email","emailaddress"].includes(n)) map.email=i;
+    else if(["email","emailaddress","publicemail"].includes(n)) map.email=i;
     else if(["city","locality","area","address"].includes(n)&&map.city===undefined) map.city=i;
-    else if(["rating","stars","score"].includes(n)) map.rating=i;
-    else if(["reviews","reviewscount","reviewcount","totalreviews","reviewsnumber"].includes(n)) map.reviews=i;
+    else if(["rating","stars","score","ratingstars"].includes(n)) map.rating=i;
+    else if(["reviews","reviewscount","reviewcount","totalreviews","reviewsnumber","no.ofratings","noofratings","numberofratings","ratingscount"].includes(n)) map.reviews=i;
     else if(["clinic","clinicname"].includes(n)) map.clinic=i;
-    else if(["grade","leadgrade","abc","abcgrade","abcclass","leadclass","leadtype","leadquality","internalrating","leadrating"].includes(n)) map.grade=i; });
+    else if(["grade","leadgrade","abc","abcgrade","abcclass","leadclass","leadtype","leadquality","internalrating","leadrating","tier"].includes(n)) map.grade=i;
+    else if(n==="website"||n==="websiteurl") map.website=i;
+    else if(n==="websitequality") map.webq=i;
+    else if(["sourceurl","mapsurl","googlemapsurl","maplink"].includes(n)) map.src=i; });
   return map;
 }
 function csvToLeads(text, cityOverride, folderOverride){
   const rows=parseCSV(text); if(rows.length<2) return [];
   const m=mapHeaders(rows[0]);
   return rows.slice(1).map(r=>({
-    Name: m.name!==undefined?r[m.name]:"",
+    Name: (m.owner!==undefined&&String(r[m.owner]||"").trim())?r[m.owner]:(m.name!==undefined?r[m.name]:""),
     Clinic: m.clinic!==undefined?r[m.clinic]:(m.name!==undefined?r[m.name]:""),
-    Phone: m.phone!==undefined?r[m.phone]:"",
+    Phone: m.phone!==undefined?(function(p){ const c=String(p||"").replace(/[\s\-().]/g,""); return /^0\d{10}$/.test(c)?c.slice(1):p; })(r[m.phone]):"",
     Email: m.email!==undefined?r[m.email]:"",
     City: cityOverride || (m.city!==undefined?r[m.city]:""),
     Rating: m.rating!==undefined?r[m.rating]:"",
     Reviews: m.reviews!==undefined?r[m.reviews]:"",
     Folder: (folderOverride||"").trim(),
     "Internal Rating": m.grade!==undefined?gradeLetter(r[m.grade]):"",
+    Notes: [
+      m.website!==undefined&&String(r[m.website]||"").trim()?("Website: "+String(r[m.website]).trim()):"",
+      m.webq!==undefined&&String(r[m.webq]||"").trim()&&String(r[m.webq]).trim()!=="empty"?("Site quality: "+String(r[m.webq]).trim()):"",
+      m.src!==undefined&&String(r[m.src]||"").trim()?("Maps: "+String(r[m.src]).trim()):""
+    ].filter(Boolean).join(" | "),
     Status:"New"
   })).filter(l=>l.Name||l.Phone);
 }
@@ -161,6 +170,7 @@ function fmtDur(sec){ sec=Math.max(0,Math.floor(sec||0)); const h=Math.floor(sec
 
 // Collapse scraper sub-town / locality names into their major metro.
 const METRO_KEYWORDS = {
+  "Jaipur": ["jaipur"],
   "Delhi": ["delhi","saket","dwarka","rohini","karol bagh","lajpat","hauz khas","connaught","nehru place","pitampura","janakpuri","vasant","rajouri","preet vihar","mayur vihar","okhla","kalkaji","paschim vihar","shalimar bagh","punjabi bagh","greater kailash"],
   "Noida": ["noida","greater noida"],
   "Ghaziabad": ["ghaziabad","indirapuram","vaishali","raj nagar","kaushambi"],

@@ -70,8 +70,10 @@ function _optimisticPatch(payload, res){
     }
   }catch(e){ /* best-effort only -- refresh() reconciles regardless */ }
 }
+function clearAdminKey(){ try{ sessionStorage.removeItem("reactivify.adminKey"); }catch(e){} }
 async function apiPost(payload){
-  const body = JSON.stringify(payload);
+  let adminKey=""; try{ adminKey=sessionStorage.getItem("reactivify.adminKey")||""; }catch(e){}
+  const body = JSON.stringify(adminKey?Object.assign({adminKey:adminKey},payload):payload);
   let lastErr = null;
   for(let attempt=0; attempt<8; attempt++){
     try{
@@ -479,7 +481,7 @@ function App(){
 
   // Admin panel is password-protected.
   if(isAdmin && !adminAuthed)
-    return <AdminGate onOk={()=>setAdminAuthed(true)} onCancel={()=>setUser(null)}/>;
+    return <AdminGate onOk={()=>setAdminAuthed(true)} onCancel={()=>{ clearAdminKey(); setUser(null); }}/>;
 
   // Interns: this browser/device must be approved by an admin before they can
   // reach their queue. Admin is exempt (handled above by the password).
@@ -496,7 +498,7 @@ function App(){
   return (
     <div className="min-h-screen">
       <Header user={user} isAdmin={isAdmin} session={session}
-        onSwitch={()=>{ if(isAdmin){ setAdminAuthed(false); setUser(null); } else setLogoutOpen(true); }} onRefresh={refresh}
+        onSwitch={()=>{ if(isAdmin){ clearAdminKey(); setAdminAuthed(false); setUser(null); } else setLogoutOpen(true); }} onRefresh={refresh}
         loading={loading} notifPerm={notifPerm} onEnableNotif={askNotif}/>
       {loading && leads.length===0 &&
         <div className="bg-indigo-50 text-indigo-700 text-sm px-4 py-2 text-center">Loading your leads, this can take up to a minute the first time -- nothing has been deleted.</div>}
@@ -750,9 +752,16 @@ function Login({interns,onPick,onNeedInterns,configMissing}){
 function AdminGate({onOk,onCancel}){
   const [pw,setPw]=useState("");
   const [err,setErr]=useState(false);
-  const ADMIN_PASSWORD="Nopassword";
-  function submit(e){ if(e) e.preventDefault();
-    if(pw===ADMIN_PASSWORD){ setErr(false); onOk(); } else { setErr(true); } }
+  const [busy,setBusy]=useState(false);
+  // Checked on the server (CONFIG.ADMIN_PASSWORD in Code_v2.gs) -- never compared
+  // in this public file. A correct password returns a session key that is then
+  // required for every admin-only write -- see apiPost() above.
+  async function submit(e){ if(e) e.preventDefault();
+    if(!pw || busy) return;
+    setBusy(true);
+    const res=await apiPost({action:"adminAuth", password:pw});
+    setBusy(false);
+    if(res && res.ok && res.key){ try{ sessionStorage.setItem("reactivify.adminKey", res.key); }catch(e){} setErr(false); onOk(); } else { setErr(true); } }
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6">
       <div className="text-3xl font-bold text-indigo-600 mb-1">Reactivify</div>
@@ -763,8 +772,8 @@ function AdminGate({onOk,onCancel}){
           placeholder="Password"
           className={"w-full px-4 py-3 rounded-2xl border shadow-sm outline-none "+(err?"border-red-400 focus:border-red-500":"border-slate-200 focus:border-indigo-400")}/>
         {err && <div className="text-xs text-red-500 -mt-1 px-1">Incorrect password. Try again.</div>}
-        <button type="submit"
-          className="py-3 rounded-2xl font-semibold shadow-sm bg-indigo-600 text-white hover:bg-indigo-700">Unlock</button>
+        <button type="submit" disabled={busy}
+          className="py-3 rounded-2xl font-semibold shadow-sm bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50">{busy?"Checking...":"Unlock"}</button>
         <button type="button" onClick={onCancel}
           className="py-2 text-sm text-slate-500 hover:text-slate-700">← Back</button>
       </form>

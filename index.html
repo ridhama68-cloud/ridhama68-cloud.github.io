@@ -106,7 +106,8 @@ function mapHeaders(headers){
     else if(["city","locality","area","address"].includes(n)&&map.city===undefined) map.city=i;
     else if(["rating","stars","score"].includes(n)) map.rating=i;
     else if(["reviews","reviewscount","reviewcount","totalreviews","reviewsnumber"].includes(n)) map.reviews=i;
-    else if(["clinic","clinicname"].includes(n)) map.clinic=i; });
+    else if(["clinic","clinicname"].includes(n)) map.clinic=i;
+    else if(["grade","leadgrade","abc","abcgrade","abcclass","leadclass","leadtype","leadquality","internalrating","leadrating"].includes(n)) map.grade=i; });
   return map;
 }
 function csvToLeads(text, cityOverride, folderOverride){
@@ -121,6 +122,7 @@ function csvToLeads(text, cityOverride, folderOverride){
     Rating: m.rating!==undefined?r[m.rating]:"",
     Reviews: m.reviews!==undefined?r[m.reviews]:"",
     Folder: (folderOverride||"").trim(),
+    "Internal Rating": m.grade!==undefined?gradeLetter(r[m.grade]):"",
     Status:"New"
   })).filter(l=>l.Name||l.Phone);
 }
@@ -134,6 +136,21 @@ function FolderBadge({lead,className}){
 
 /* ================== HELPERS ================== */
 function num(v){ const n=parseFloat(String(v).replace(/[^\d.]/g,"")); return isNaN(n)?0:n; }
+// Lead grade (from the CSV's A/B/C column): A = green (perfect), B = yellow, C = orange.
+// Stored as a letter in the existing "Internal Rating" column; anything else counts as ungraded.
+const GRADES=[
+  {k:"A", name:"Green",  chip:"bg-green-600 text-white border-green-600",   idle:"bg-green-50 text-green-800 border-green-300",   dot:"bg-green-500"},
+  {k:"B", name:"Yellow", chip:"bg-yellow-500 text-white border-yellow-500", idle:"bg-yellow-50 text-yellow-800 border-yellow-300", dot:"bg-yellow-400"},
+  {k:"C", name:"Orange", chip:"bg-orange-500 text-white border-orange-500", idle:"bg-orange-50 text-orange-800 border-orange-300", dot:"bg-orange-500"}
+];
+function gradeLetter(v){ const m=String(v==null?"":v).trim().toUpperCase().match(/^([ABC])(?![A-Z])/); return m?m[1]:""; }
+function gradeOf(l){ return gradeLetter(l&&l["Internal Rating"]); }
+function gradeRank(l){ const g=gradeOf(l); return g?g.charCodeAt(0)-65:3; }   // A=0, B=1, C=2, ungraded=3
+function GradeBadge({lead,className}){
+  const g=GRADES.find(function(x){ return x.k===gradeOf(lead); });
+  if(!g) return null;
+  return <span title={"Grade "+g.k+" - "+g.name} className={"inline-flex items-center justify-center rounded-full font-bold text-white "+g.dot+" "+(className||"w-5 h-5 text-[10px]")}>{g.k}</span>;
+}
 function digits(v){ return String(v||"").replace(/\D/g,""); }
 function waNumber(v){ const d=digits(v); return d.length===10?"91"+d:d; }
 function todayISO(){ const d=new Date(); return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }
@@ -1103,6 +1120,7 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
   const [assignFilter,setAssignFilter]=useState("all");   // all | unassigned | <intern name>
   const [pendingFolder,setPendingFolder]=useState("");    // folder tag applied to the next CSV upload
   const [folderFilter,setFolderFilter]=useState("All");   // view leads by folder
+  const [gradeFilter,setGradeFilter]=useState([]);        // [] = every grade; else any mix of A / B / C / none
   const [workAs,setWorkAs]=useState("");             // admin working inside an intern's queue
   // "Unassigned / New" = a freshly uploaded lead sitting in the pool (blank or Team), not yet given to an intern.
   const isPoolLead=(l)=>{ const a=String(l["Assigned To"]||"").trim().toLowerCase(); return a===""||a==="team"; };
@@ -1124,6 +1142,7 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
     if(assignFilter==="unassigned"){ if(!isPoolLead(l)) return false; }
     else if(assignFilter!=="all"){ if(String(l["Assigned To"]||"").trim().toLowerCase()!==assignFilter.toLowerCase()) return false; }
     if(folderFilter!=="All" && String(l.Folder||"").trim()!==folderFilter) return false;
+    if(gradeFilter.length && gradeFilter.indexOf(gradeOf(l)||"none")<0) return false;
     if(q){ const hay=((l.Name||"")+" "+(l.Clinic||"")+" "+(l.Phone||"")+" "+(l.City||"")).toLowerCase(); if(hay.indexOf(q)<0) return false; }
     return true;
   });
@@ -1307,12 +1326,27 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
           </select>
         </div>}
 
+      {/* Grade filter: pick one colour or combine several (e.g. green + yellow) */}
+      <div className="flex flex-wrap gap-2 items-center">
+        <span className="text-xs text-slate-400 mr-1">Grade:</span>
+        {GRADES.map(function(g){
+          const c=leads.filter(function(l){ return gradeOf(l)===g.k; }).length;
+          const on=gradeFilter.indexOf(g.k)>=0;
+          return <button key={g.k} onClick={()=>setGradeFilter(function(cur){ return cur.indexOf(g.k)>=0?cur.filter(function(x){ return x!==g.k; }):cur.concat([g.k]); })}
+            className={"px-3 py-1 rounded-full text-sm border "+(on?g.chip:g.idle)}>{g.k} - {g.name} ({c})</button>;
+        })}
+        {(function(){ const c=leads.filter(function(l){ return !gradeOf(l); }).length; const on=gradeFilter.indexOf("none")>=0;
+          return <button onClick={()=>setGradeFilter(function(cur){ return cur.indexOf("none")>=0?cur.filter(function(x){ return x!=="none"; }):cur.concat(["none"]); })}
+            className={"px-3 py-1 rounded-full text-sm border "+(on?"bg-slate-700 text-white border-slate-700":"bg-slate-50 text-slate-600 border-slate-300")}>No grade ({c})</button>; })()}
+        {gradeFilter.length>0 && <button onClick={()=>setGradeFilter([])} className="text-xs text-slate-500 underline">clear</button>}
+      </div>
+
       <div className="flex items-center gap-2 text-sm">
         <span className="text-slate-500">Sort:</span>
         {["reviews","rating","internal"].map(k=>(
           <button key={k} onClick={()=>setSortBy(k)}
             className={"px-3 py-1 rounded-full "+(sortBy===k?"bg-indigo-600 text-white":"bg-slate-100")}>
-            {k==="internal"?"internal rating":k}</button>
+            {k==="internal"?"grade A-C":k}</button>
         ))}
       </div>
 
@@ -1750,8 +1784,8 @@ function sortLeads(leads,by){
   const cp=[...leads];
   if(by==="reviews") cp.sort((a,b)=>num(b.Reviews)-num(a.Reviews));
   else if(by==="rating") cp.sort((a,b)=>num(b.Rating)-num(a.Rating));
-  else if(by==="internal") cp.sort((a,b)=>num(b["Internal Rating"])-num(a["Internal Rating"]));
-  else if(by==="smart") cp.sort((a,b)=>(statusRank(a)-statusRank(b))||(num(b["Internal Rating"])-num(a["Internal Rating"]))||(num(b.Reviews)-num(a.Reviews)));
+  else if(by==="internal") cp.sort((a,b)=>gradeRank(a)-gradeRank(b));
+  else if(by==="smart") cp.sort((a,b)=>(statusRank(a)-statusRank(b))||(gradeRank(a)-gradeRank(b))||(num(b.Reviews)-num(a.Reviews)));
   return cp;
 }
 
@@ -1767,7 +1801,7 @@ function AdminLeadTable({leads,internNames,refresh,notify}){
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-slate-500 text-left"><tr>
             <th className="px-3 py-2">#</th><th className="px-3 py-2">Clinic / Name</th><th className="px-3 py-2">City</th>
-            <th className="px-3 py-2">Rev</th><th className="px-3 py-2">★</th><th className="px-3 py-2">Status</th>
+            <th className="px-3 py-2">Grade</th><th className="px-3 py-2">Rev</th><th className="px-3 py-2">★</th><th className="px-3 py-2">Status</th>
             <th className="px-3 py-2">Assigned</th><th className="px-3 py-2"></th></tr></thead>
           <tbody>
             {leads.map((l,i)=>(
@@ -1775,7 +1809,7 @@ function AdminLeadTable({leads,internNames,refresh,notify}){
                 <td className="px-3 py-2 text-slate-400">{i+1}</td>
                 <td className="px-3 py-2 font-medium">{l.Clinic||l.Name}{l.Clinic&&l.Name?<div className="text-xs text-slate-400">{l.Name}</div>:null}</td>
                 <td className="px-3 py-2">{l.City}</td>
-                <td className="px-3 py-2">{l.Reviews}</td>
+                <td className="px-3 py-2"><GradeBadge lead={l}/></td><td className="px-3 py-2">{l.Reviews}</td>
                 <td className="px-3 py-2">{l.Rating}</td>
                 <td className="px-3 py-2"><StatusBadge status={l.Status}/></td>
                 <td className="px-3 py-2">
@@ -1831,7 +1865,7 @@ function EditLead({lead,onClose,refresh,notify}){
           </select>
         </div>
         <div>
-          <label className="text-[11px] text-slate-500">Priority (internal rating)</label>
+          <label className="text-[11px] text-slate-500">Lead grade (A green, B yellow, C orange)</label>
           <PriorityRating lead={lead} refresh={refresh} notify={notify}/>
         </div>
         {(isMeeting||isFollow) &&
@@ -1862,34 +1896,33 @@ function StatusBadge({status}){
   return <span className={"px-2 py-0.5 rounded-full text-xs "+color}>{s}</span>;
 }
 
-// Editable 1–5 "internal rating" (your team's own priority score). Tap a star
-// to set it; it saves to the lead's Internal Rating column so you can sort by it.
+// Editable lead grade: tap A (green) / B (yellow) / C (orange); tap the active one again to clear.
+// Saves a letter to the lead's Internal Rating column, so the grade filters and sorting pick it up.
 function PriorityRating({lead,refresh,notify,label}){
   const [busy,setBusy]=useState(false);
-  const [val,setVal]=useState(num(lead["Internal Rating"]));
-  useEffect(function(){ setVal(num(lead["Internal Rating"])); },[lead.ID]);
-  const cur=val;
-  async function set(n){
+  const [val,setVal]=useState(gradeOf(lead));
+  useEffect(function(){ setVal(gradeOf(lead)); },[lead.ID,lead["Internal Rating"]]);
+  async function set(g){
     if(busy) return;
-    setVal(n||0);
+    const next = g===val ? "" : g;
+    const prev=val;
+    setVal(next);
     setBusy(true);
-    const res=await apiPost({action:"upsert", lead:{ID:lead.ID, "Internal Rating": n}});
+    const res=await apiPost({action:"upsert", lead:{ID:lead.ID, "Internal Rating": next}});
     setBusy(false);
-    if(res.ok){ notify(n?("Priority "+n+"★"):"Priority cleared"); refresh(); }
-    else { notify("Failed: "+(res.error||"")); setVal(num(lead["Internal Rating"])); }
+    if(res.ok){ notify(next?("Grade "+next):"Grade cleared"); refresh(); }
+    else { notify("Failed: "+(res.error||"")); setVal(prev); }
   }
   return (
-    <div className="flex items-center gap-0.5">
+    <div className="flex items-center gap-1">
       {label && <span className="text-[11px] text-slate-500 mr-1">{label}</span>}
-      {[1,2,3,4,5].map(n=>(
-        <button key={n} disabled={busy} onClick={()=>set(n)} title={n+" star"}
-          className={"text-lg leading-none disabled:opacity-40 "+(n<=cur?"text-amber-500":"text-slate-300 hover:text-amber-300")}>★</button>
-      ))}
-      {cur>0 && <button disabled={busy} onClick={()=>set("")} className="ml-1 text-[10px] text-slate-400 hover:text-slate-600">clear</button>}
+      {GRADES.map(function(g){
+        return <button key={g.k} disabled={busy} onClick={()=>set(g.k)} title={"Grade "+g.k+" - "+g.name}
+          className={"w-7 h-7 rounded-full text-xs font-bold border disabled:opacity-40 "+(val===g.k?g.chip:g.idle)}>{g.k}</button>;
+      })}
     </div>
   );
 }
-
 /* ================== TEAM MANAGEMENT ================== */
 function TeamManager({interns,refresh,notify}){
   const [open,setOpen]=useState(interns.length===0);
@@ -2271,6 +2304,7 @@ function InternView({user,leads,stats,refresh,notify,actor}){
   useEffect(function(){ try{ localStorage.setItem("reactivify.cat."+user, cat); }catch(e){} },[cat,user]);
   const [city,setCity]=useState(function(){ try{ return localStorage.getItem("reactivify.city."+user)||"All"; }catch(e){ return "All"; } });  // City filter — persisted per user
   useEffect(function(){ try{ localStorage.setItem("reactivify.city."+user, city); }catch(e){} },[city,user]);
+  const [gradeSel,setGradeSel]=useState([]);        // [] = every grade; else any mix of A / B / C / none
   const mine=useMemo(()=>leads.filter(l=>String(l["Assigned To"]||"").trim().toLowerCase()===String(user).toLowerCase()),[leads,user]);
   // Category counts (from each lead's tag) so school / physio / Australia stay separate in the dialing queue.
   const categories=useMemo(function(){ const set={}; mine.forEach(function(l){ const f=String(l.Folder||"").trim(); if(f) set[f]=(set[f]||0)+1; }); return Object.keys(set).sort().map(function(k){ return [k,set[k]]; }); },[mine]);
@@ -2280,8 +2314,9 @@ function InternView({user,leads,stats,refresh,notify,actor}){
   const mineCat=useMemo(function(){ return mine.filter(function(l){
     if(cat!=="All" && String(l.Folder||"").trim()!==cat) return false;
     if(city!=="All" && cityGroup(l.City)!==city) return false;
+    if(gradeSel.length && gradeSel.indexOf(gradeOf(l)||"none")<0) return false;
     return true;
-  }); },[mine,cat,city]);
+  }); },[mine,cat,city,gradeSel]);
   // Toggle a status chip. "fresh"/"all" are exclusive; individual statuses stack (union).
   function toggleChip(tok){
     setFday("");
@@ -2305,7 +2340,7 @@ function InternView({user,leads,stats,refresh,notify,actor}){
   const sorted=useMemo(function(){ return sortLeads(filtered, sortBy); },[filtered,sortBy]);
 
   const [idx,setIdx]=useState(0);
-  useEffect(()=>{ setIdx(0); },[sel,fday,mode,sortBy,cat,city]);
+  useEffect(()=>{ setIdx(0); },[sel,fday,mode,sortBy,cat,city,gradeSel]);
   const active=sorted[idx];
   useEffect(()=>{ if(idx>=sorted.length) setIdx(Math.max(0,sorted.length-1)); },[sorted.length]);
 
@@ -2341,6 +2376,20 @@ function InternView({user,leads,stats,refresh,notify,actor}){
           <span className="text-xs text-slate-400 mr-1">📍 City:</span>
           <button onClick={()=>setCity("All")} className={"px-2.5 py-1 rounded-full text-xs "+(city==="All"?"bg-slate-900 text-white":"bg-slate-100 text-slate-600")}>All</button>
           {cities.map(function(c){ return <button key={c[0]} onClick={()=>setCity(c[0])} className={"px-2.5 py-1 rounded-full text-xs "+(city===c[0]?"bg-blue-600 text-white":"bg-blue-50 text-blue-700 border border-blue-200")}>{c[0]} ({c[1]})</button>; })}
+        </div>}
+      {mine.some(function(l){ return gradeOf(l); }) &&
+        <div className="flex items-center gap-1.5 flex-wrap bg-white rounded-xl border border-slate-200 px-3 py-2">
+          <span className="text-xs text-slate-400 mr-1">Grade:</span>
+          {GRADES.map(function(g){
+            const c=mine.filter(function(l){ return gradeOf(l)===g.k; }).length;
+            const on=gradeSel.indexOf(g.k)>=0;
+            return <button key={g.k} onClick={()=>setGradeSel(function(cur){ return cur.indexOf(g.k)>=0?cur.filter(function(x){ return x!==g.k; }):cur.concat([g.k]); })}
+              className={"px-2.5 py-1 rounded-full text-xs border "+(on?g.chip:g.idle)}>{g.k} - {g.name} ({c})</button>;
+          })}
+          {(function(){ const c=mine.filter(function(l){ return !gradeOf(l); }).length; const on=gradeSel.indexOf("none")>=0;
+            return <button onClick={()=>setGradeSel(function(cur){ return cur.indexOf("none")>=0?cur.filter(function(x){ return x!=="none"; }):cur.concat(["none"]); })}
+              className={"px-2.5 py-1 rounded-full text-xs border "+(on?"bg-slate-700 text-white border-slate-700":"bg-slate-50 text-slate-600 border-slate-300")}>No grade ({c})</button>; })()}
+          {gradeSel.length>0 && <button onClick={()=>setGradeSel([])} className="text-xs text-slate-500 underline">clear</button>}
         </div>}
       {mode!=="close" && mode!=="board" && <InternFilters mine={mineCat} sel={sel} toggleChip={toggleChip} fday={fday} setFday={setFday} sortBy={sortBy} setSortBy={setSortBy}/>}
       {mode==="board"
@@ -2592,7 +2641,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
         {lead.Email && <div className="text-xs text-slate-400 mt-0.5">{lead.Email}</div>}
       </div>
       {mapsUrl(lead) && <a href={mapsUrl(lead)} target="_blank" rel="noopener" className="block text-center text-sm text-blue-600">📍 Open in Google Maps</a>}
-      <div className="flex items-center justify-center gap-1"><span className="text-[11px] text-slate-500">Priority:</span><PriorityRating lead={lead} refresh={onSaved} notify={notify}/></div>
+      <div className="flex items-center justify-center gap-1"><span className="text-[11px] text-slate-500">Grade:</span><PriorityRating lead={lead} refresh={onSaved} notify={notify}/></div>
 
       {booked && lead["Meeting Date"] &&
         <div className="bg-green-50 rounded-xl p-3 text-sm space-y-2">

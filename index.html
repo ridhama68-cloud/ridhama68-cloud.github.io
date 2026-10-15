@@ -50,6 +50,26 @@ async function apiGet(action){ const r = await fetch(API_URL + "?action=" + acti
 // readable JSON response, which reliably means the row was written. This always
 // RESOLVES (never hangs); on total failure it returns {ok:false} so the caller
 // can show a retry state instead of a silent stuck spinner.
+// Set once by App() so apiPost can optimistically update the shared leads list
+// without every call site needing to know about it.
+let _setLeadsRef = null;
+function _optimisticPatch(payload, res){
+  if(!_setLeadsRef || !res || res.ok===false) return;
+  try{
+    if(payload.action==="upsert" && res.lead && res.lead.ID){
+      _setLeadsRef(function(cur){
+        const i=cur.findIndex(function(l){ return String(l.ID)===String(res.lead.ID); });
+        if(i<0) return cur.concat([res.lead]);
+        const next=cur.slice(); next[i]=Object.assign({},cur[i],res.lead); return next;
+      });
+    } else if(payload.action==="delete" && payload.id){
+      _setLeadsRef(function(cur){ return cur.filter(function(l){ return String(l.ID)!==String(payload.id); }); });
+    } else if(payload.action==="bulkField" && Array.isArray(payload.rows) && payload.field){
+      const rows=new Set(payload.rows);
+      _setLeadsRef(function(cur){ return cur.map(function(l){ return rows.has(l._row) ? Object.assign({},l,{[payload.field]:payload.value}) : l; }); });
+    }
+  }catch(e){ /* best-effort only -- refresh() reconciles regardless */ }
+}
 async function apiPost(payload){
   const body = JSON.stringify(payload);
   let lastErr = null;
@@ -60,7 +80,9 @@ async function apiPost(payload){
         headers:{"Content-Type":"text/plain;charset=utf-8"},
         body: body
       });
-      return await r.json();            // readable response == write persisted
+      const res = await r.json();       // readable response == write persisted
+      _optimisticPatch(payload, res);
+      return res;
     }catch(e){
       lastErr = e;
       await new Promise(res=>setTimeout(res, 300*(attempt+1)));  // backoff, then retry
@@ -359,6 +381,7 @@ function App(){
   const [user,setUser]=useState(null);
   const [adminAuthed,setAdminAuthed]=useState(false);
   const [leads,setLeads]=useState([]);
+  _setLeadsRef = setLeads;
   const [interns,setInterns]=useState(()=>{ try{ const c=localStorage.getItem("reactivify_interns"); return c?JSON.parse(c):[]; }catch(e){ return []; } });
   const [stats,setStats]=useState({});
   const [sessions,setSessions]=useState([]);
@@ -378,16 +401,18 @@ function App(){
   const refresh=useCallback(async()=>{
     if(configMissing) return;
     setLoading(true);
-    try{
-      // Speed: fire all loads in PARALLEL (was sequential = ~3x the wait).
-      const [l,st,se,dv]=await Promise.all([apiGet("list"),apiGet("getStats"),apiGet("getSessions"),apiGet("getDevices")]);
-      if(l.ok){ setLeads(l.leads||[]); setInterns(l.interns||[]);
-        try{ localStorage.setItem("reactivify_interns", JSON.stringify(l.interns||[])); }catch(e){} }
-      if(st.ok) setStats(st.stats||{});
-      if(se.ok) setSessions(se.sessions||[]);
-      if(dv && dv.ok) setDevices(dv.devices||[]);
-    }
-    catch(e){ notify("Load failed: "+e); }
+    // Speed: fire all four loads in parallel AND apply each as it lands, instead of
+    // waiting on Promise.all -- stats/sessions/devices are small and usually land
+    // in well under a second; the leads list is the one that can take much longer
+    // at this lead count, and there's no reason the other three should wait on it.
+    const tasks = [
+      apiGet("list").then(function(l){ if(l.ok){ setLeads(l.leads||[]); setInterns(l.interns||[]);
+        try{ localStorage.setItem("reactivify_interns", JSON.stringify(l.interns||[])); }catch(e){} } }),
+      apiGet("getStats").then(function(st){ if(st.ok) setStats(st.stats||{}); }),
+      apiGet("getSessions").then(function(se){ if(se.ok) setSessions(se.sessions||[]); }),
+      apiGet("getDevices").then(function(dv){ if(dv && dv.ok) setDevices(dv.devices||[]); })
+    ].map(function(p){ return p.catch(function(e){ notify("Load failed: "+e); }); });
+    await Promise.all(tasks);
     setLoading(false);
   },[configMissing]);
 
@@ -1228,13 +1253,17 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
     );
   }
 
+  const pendingDeviceCount = useMemo(function(){ return (devices||[]).filter(function(d){ return d.status==="pending"; }).length; },[devices]);
   const tabs=[["dashboard","📊 Dashboard"],["leads","📇 Leads"],["pipeline","✅ Pipeline"],["team","👥 Team"]];
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-4">
       <div className="flex gap-1 bg-slate-100 rounded-full p-1 w-max">
         {tabs.map(([id,label])=>(
           <button key={id} onClick={()=>setSection(id)}
-            className={"px-4 py-1.5 rounded-full text-sm "+(section===id?"bg-white shadow font-medium":"text-slate-600")}>{label}</button>
+            className={"px-4 py-1.5 rounded-full text-sm "+(section===id?"bg-white shadow font-medium":"text-slate-600")}>{label}
+            {id==="team" && pendingDeviceCount>0 &&
+              <span className="ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold align-middle">{pendingDeviceCount}</span>}
+          </button>
         ))}
       </div>
 

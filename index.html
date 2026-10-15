@@ -1288,6 +1288,8 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
     setBusy(true); await apiPost({action:"clearAll"}); setBusy(false); notify("All leads cleared"); refresh();
   }
 
+  const pendingDeviceCount = useMemo(function(){ return (devices||[]).filter(function(d){ return d.status==="pending"; }).length; },[devices]);
+
   if(workAs){
     return (
       <div className="p-4 max-w-2xl mx-auto space-y-3">
@@ -1300,7 +1302,6 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
     );
   }
 
-  const pendingDeviceCount = useMemo(function(){ return (devices||[]).filter(function(d){ return d.status==="pending"; }).length; },[devices]);
   const tabs=[["dashboard","📊 Dashboard"],["leads","📇 Leads"],["pipeline","✅ Pipeline"],["team","👥 Team"]];
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-4">

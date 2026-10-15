@@ -149,11 +149,8 @@ function csvToLeads(text, cityOverride, folderOverride){
     Reviews: m.reviews!==undefined?r[m.reviews]:"",
     Folder: (folderOverride||"").trim(),
     "Internal Rating": m.grade!==undefined?gradeLetter(r[m.grade]):"",
-    Notes: [
-      m.website!==undefined&&String(r[m.website]||"").trim()?("Website: "+String(r[m.website]).trim()):"",
-      m.webq!==undefined&&String(r[m.webq]||"").trim()&&String(r[m.webq]).trim()!=="empty"?("Site quality: "+String(r[m.webq]).trim()):"",
-      m.src!==undefined&&String(r[m.src]||"").trim()?("Maps: "+String(r[m.src]).trim()):""
-    ].filter(Boolean).join(" | "),
+    Website: m.website!==undefined?String(r[m.website]||"").trim():"",
+    "Website Quality": m.webq!==undefined?String(r[m.webq]||"").trim():"",
     Status:"New"
   })).filter(l=>l.Name||l.Phone);
 }
@@ -181,6 +178,31 @@ function GradeBadge({lead,className}){
   const g=GRADES.find(function(x){ return x.k===gradeOf(lead); });
   if(!g) return null;
   return <span title={"Grade "+g.k+" - "+g.name} className={"inline-flex items-center justify-center rounded-full font-bold text-white "+g.dot+" "+(className||"w-5 h-5 text-[10px]")}>{g.k}</span>;
+}
+// A Google Maps search for this lead -- built on the fly, so it works even for
+// leads imported before a Maps link was ever stored.
+function leadMapsQuery(lead){ return [lead.Clinic||lead.Name, lead.Folder, lead.City].filter(Boolean).join(" "); }
+function leadMapsUrl(lead){ return "https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(leadMapsQuery(lead)); }
+function MapsLink({lead,className}){
+  return <a href={leadMapsUrl(lead)} target="_blank" rel="noreferrer" onClick={function(e){ e.stopPropagation(); }}
+    className={className||"inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 hover:bg-blue-100"}>Maps</a>;
+}
+// Green = has a website (click opens it). Red = none found -- click instead
+// searches Google for one. The small pill next to it is the scraped website
+// quality (e.g. "weak: does not load", "weak: instagram.com") when known.
+function WebsiteBadge({lead,className}){
+  const url=String(lead.Website||"").trim();
+  const q=String(lead["Website Quality"]||"").trim();
+  const has=!!url;
+  const href=has?(/^https?:\/\//i.test(url)?url:("http://"+url)):("https://www.google.com/search?q="+encodeURIComponent(leadMapsQuery(lead)+" website"));
+  return (
+    <span className={"inline-flex items-center gap-1 "+(className||"")}>
+      <a href={href} target="_blank" rel="noreferrer" onClick={function(e){ e.stopPropagation(); }}
+        className={"px-2 py-0.5 rounded-full text-xs font-medium "+(has?"bg-green-100 text-green-700 hover:bg-green-200":"bg-red-100 text-red-700 hover:bg-red-200")}>{has?"Website":"No website"}</a>
+      {q && q.toLowerCase()!=="empty" &&
+        <span className={"px-2 py-0.5 rounded-full text-[11px] "+(q.toLowerCase()==="ok"?"bg-green-50 text-green-700":"bg-amber-50 text-amber-700")}>{q}</span>}
+    </span>
+  );
 }
 function digits(v){ return String(v||"").replace(/\D/g,""); }
 function waNumber(v){ const d=digits(v); return d.length===10?"91"+d:d; }
@@ -431,7 +453,7 @@ function App(){
   // keep data fresh so countdowns/notifications stay accurate. Pause polling when
   // the tab is hidden (big battery/CPU win on phones) and use a lighter cadence.
   useEffect(()=>{ if(!user) return;
-    const id=setInterval(()=>{ if(!document.hidden) refresh(); },180000);
+    const id=setInterval(()=>{ if(!document.hidden) refresh(); },600000);
     return ()=>clearInterval(id); },[user,refresh]);
 
   function askNotif(){
@@ -1290,7 +1312,6 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
 
       {section==="pipeline" && <React.Fragment>
         <PipelineBoard leads={leads} refresh={refresh} notify={notify} members={internNames}/>
-        <RecordingsPanel notify={notify} refresh={refresh}/>
         <MeetingsPipeline leads={leads} refresh={refresh} notify={notify}/>
       </React.Fragment>}
 
@@ -1863,7 +1884,7 @@ function AdminLeadTable({leads,internNames,refresh,notify}){
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-slate-500 text-left"><tr>
             <th className="px-3 py-2">#</th><th className="px-3 py-2">Clinic / Name</th><th className="px-3 py-2">City</th>
-            <th className="px-3 py-2">Grade</th><th className="px-3 py-2">Rev</th><th className="px-3 py-2">★</th><th className="px-3 py-2">Status</th>
+            <th className="px-3 py-2">Grade</th><th className="px-3 py-2">Web</th><th className="px-3 py-2">Rev</th><th className="px-3 py-2">★</th><th className="px-3 py-2">Status</th>
             <th className="px-3 py-2">Assigned</th><th className="px-3 py-2"></th></tr></thead>
           <tbody>
             {leads.map((l,i)=>(
@@ -1871,7 +1892,9 @@ function AdminLeadTable({leads,internNames,refresh,notify}){
                 <td className="px-3 py-2 text-slate-400">{i+1}</td>
                 <td className="px-3 py-2 font-medium">{l.Clinic||l.Name}{l.Clinic&&l.Name?<div className="text-xs text-slate-400">{l.Name}</div>:null}</td>
                 <td className="px-3 py-2">{l.City}</td>
-                <td className="px-3 py-2"><GradeBadge lead={l}/></td><td className="px-3 py-2">{l.Reviews}</td>
+                <td className="px-3 py-2"><GradeBadge lead={l}/></td>
+                <td className="px-3 py-2 whitespace-nowrap"><WebsiteBadge lead={l}/> <MapsLink lead={l}/></td>
+                <td className="px-3 py-2">{l.Reviews}</td>
                 <td className="px-3 py-2">{l.Rating}</td>
                 <td className="px-3 py-2"><StatusBadge status={l.Status}/></td>
                 <td className="px-3 py-2">
@@ -1929,6 +1952,10 @@ function EditLead({lead,onClose,refresh,notify}){
         <div>
           <label className="text-[11px] text-slate-500">Lead grade (A green, B yellow, C orange)</label>
           <PriorityRating lead={lead} refresh={refresh} notify={notify}/>
+        </div>
+        <div>
+          <label className="text-[11px] text-slate-500">Website</label>
+          <div className="flex items-center gap-2"><WebsiteBadge lead={lead}/> <MapsLink lead={lead}/></div>
         </div>
         {(isMeeting||isFollow) &&
           <div className="bg-indigo-50 rounded-lg p-2 space-y-1">
@@ -2690,6 +2717,9 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
           {lead.Rating && <span>★ {lead.Rating}</span>}
           {lead.Reviews && <span>{lead.Reviews} reviews</span>}
           <FolderBadge lead={lead}/>
+        </div>
+        <div className="mt-1"><WebsiteBadge lead={lead}/> <MapsLink lead={lead}/></div>
+        <div className="text-sm text-slate-500">
           {lead["Conflict Flag"]==="true" && <span className="text-red-500">⚠ slot conflict</span>}
         </div>
       </div>
@@ -2721,11 +2751,6 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
         <div className="bg-slate-50 rounded-xl p-3 space-y-1">
           <div className="text-xs font-semibold text-slate-400">Call recordings</div>
           {String(lead.Recording).split("\n").filter(Boolean).map((u,i)=><a key={i} href={u} target="_blank" className="block text-sm text-indigo-600">▶ Recording {i+1}</a>)}
-        </div>}
-      {lead.Coaching &&
-        <div className="bg-indigo-50 rounded-xl p-3 max-h-56 overflow-y-auto no-scrollbar">
-          <div className="text-xs font-semibold text-indigo-400 mb-1">🎯 AI coaching</div>
-          <div className="text-sm text-slate-700 whitespace-pre-wrap">{lead.Coaching}</div>
         </div>}
 
       {notesHistory &&

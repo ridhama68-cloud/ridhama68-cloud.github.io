@@ -682,7 +682,7 @@ function LogoutModal({user,onCancel,onLoggedOut,notify}){
                 {missing.map(m=>(
                   <div key={m.id} className="border border-slate-200 rounded-xl p-3">
                     <div className="font-medium text-sm">{m.clinic}</div>
-                    <div className="text-[11px] text-slate-400">{m.phone||"no phone"}{m.name?" · Dr. "+m.name:""}</div>
+                    <div className="text-[11px] text-slate-400">{m.phone||"no phone"}{m.name?" · "+m.name:""}</div>
                     {reasonFor===m.id
                       ? <div className="mt-2 space-y-2">
                           <textarea value={reason} onChange={e=>setReason(e.target.value)} rows={2}
@@ -1636,12 +1636,35 @@ function FunnelDashboard({leads,internNames}){
     if(dcity!=="All" && cityGroup(l.City)!==dcity) return false;
     return true;
   });
-  // Count of UNIQUE leads that reached each stage (stamp date within range).
+  // "Leads" = leads added in the range. Every other stage comes from the per-day
+  // call log (the same data as "Calls per day"): each logged call counts, redials included.
   function count(list,col){ return list.filter(function(l){ return inRange(l[col]); }).length; }
-  const team={}; FUNNEL_STAGES.forEach(function(s){ team[s[0]]=count(scoped,s[1]); });
+  const [daily,setDaily]=useState(null);
+  useEffect(function(){ apiGet("getDailyCalls").then(function(r){ if(r&&r.ok) setDaily(r.daily||{}); }).catch(function(){}); },[leads]);
+  function dailyCounts(name){
+    const o={"Dialed":0,"Conversation":0,"Website Sent":0,"Meeting Booked":0,"Showed up":0,"Closed":0};
+    if(!daily) return o;
+    Object.keys(daily).forEach(function(day){
+      if(day<from||day>to) return;
+      const d=daily[day]||{};
+      Object.keys(d).forEach(function(who){
+        if(name && String(who).trim().toLowerCase()!==name.toLowerCase()) return;
+        const rec=d[who]||{};
+        const n=function(k){ return rec[k]||0; };
+        const showed=n("Showed Up");
+        const dials=(rec.calls||0)-n("Dumped")-showed;
+        o["Dialed"]+=dials; o["Conversation"]+=dials-n("Not Answering");
+        o["Website Sent"]+=n("Website Sent"); o["Meeting Booked"]+=n("Meeting Booked"); o["Showed up"]+=showed; o["Closed"]+=n("Landed");
+      });
+    });
+    return o;
+  }
+  const dTeam=dailyCounts(null);
+  const team={}; FUNNEL_STAGES.forEach(function(s){ team[s[0]]= s[0]==="Leads" ? count(scoped,s[1]) : dTeam[s[0]]; });
   const rows=internNames.map(function(name){
     const mine=scoped.filter(function(l){ return String(l["Assigned To"]||"").trim().toLowerCase()===name.toLowerCase(); });
-    const o={name:name}; FUNNEL_STAGES.forEach(function(s){ o[s[0]]=count(mine,s[1]); }); return o;
+    const dm=dailyCounts(name);
+    const o={name:name}; FUNNEL_STAGES.forEach(function(s){ o[s[0]]= s[0]==="Leads" ? count(mine,s[1]) : dm[s[0]]; }); return o;
   });
   const stageCol=function(n){ const f=FUNNEL_STAGES.find(function(s){ return s[0]===n; }); return f?f[1]:"Timestamp"; };
   const pctOf=function(a,b){ return team[a]>0? Math.round(team[b]/team[a]*100):0; };
@@ -1709,7 +1732,7 @@ function FunnelDashboard({leads,internNames}){
           </tbody>
         </table>
       </div>
-      <div className="text-[11px] text-slate-400">Each number = unique leads that reached that stage in the range (a lead keeps its earlier stages when it advances, so counts never drop). History before this update is estimated from each lead's current status; show-ups & website-sent fill in as you work.</div>
+      <div className="text-[11px] text-slate-400">Dialed / Convos / Website / Booked / Showed up / Closed count every call logged in the range (redials included), from the same log as "Calls per day". Dumped is not a dial and Not Answering is not a conversation. The niche / city filter only narrows "Leads". The call log keeps the last 120 days.</div>
     </div>
   );
 }
@@ -2622,11 +2645,11 @@ function InternList({mine,refresh,notify,actor}){
 /* ================== PHONE VIEW (tap-to-dial + WhatsApp) ================== */
 // Pre-written WhatsApp templates. Add messages here and a button appears for each
 // lead in the Phone view. Use {name} and {clinic} — filled in per lead.
-// Example: { label:"Intro", text:"Hi Dr. {name}, this is __ from Reactivify ..." }
+// Example: { label:"Intro", text:"Hi {name}, this is __ from Reactivify ..." }
 const WA_TEMPLATES = [
 ];
 function waTextFor(l){
-  return encodeURIComponent("Hi Dr. "+(l.Name||"")+", I'm reaching out from Reactivify — we build websites for clinics like "+(l.Clinic||"yours")+". Do you have a couple of minutes to chat?");
+  return encodeURIComponent("Hi "+(l.Name||"there")+", I'm reaching out from Reactivify — we build websites for businesses like "+(l.Clinic||"yours")+". Do you have a couple of minutes to chat?");
 }
 function PhoneView({mine}){
   const [limit,setLimit]=useState(50);
@@ -2684,7 +2707,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
   const [dt,setDt]=useState({date:todayISO(),time:"11:00"});
 
   const wa=waNumber(lead.Phone);
-  const waMsg=encodeURIComponent("Hi Dr. "+(lead.Name||"")+", I'm reaching out from Reactivify — we build websites for clinics like "+(lead.Clinic||"yours")+". Do you have a couple of minutes to chat?");
+  const waMsg=encodeURIComponent("Hi "+(lead.Name||"there")+", I'm reaching out from Reactivify — we build websites for businesses like "+(lead.Clinic||"yours")+". Do you have a couple of minutes to chat?");
   const notesHistory=String(lead.Notes||"").trim();
   const booked=/booked/i.test(lead.Status||"");
   const gcal=booked?gcalUrl(lead):"";
@@ -2726,7 +2749,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
       </div>
       <div>
         <div className="text-xl font-bold">{lead.Clinic||lead.Name}</div>
-        {lead.Clinic&&lead.Name && <div className="text-slate-500">Dr. {lead.Name}</div>}
+        {lead.Clinic&&lead.Name && <div className="text-slate-500">{lead.Name}</div>}
         <div className="text-sm text-slate-500 mt-1 flex flex-wrap gap-x-3">
           {lead.City && <span>📍 {lead.City}</span>}
           {lead.Rating && <span>★ {lead.Rating}</span>}

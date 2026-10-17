@@ -2098,6 +2098,11 @@ function TeamManager({interns,refresh,notify}){
     setBusy(false);
     if(res.ok){ notify("Updated "+eName); cancelEdit(); refresh(); } else notify("Failed: "+(res.error||"error"));
   }
+  async function toggleMute(i){
+    const muted=!i.muted;
+    const res=await apiPost({action:"setInternMuted", name:i.name, muted:muted});
+    if(res.ok){ notify(muted?("Emails to "+i.name+" stopped"):("Emails to "+i.name+" resumed")); refresh(); } else notify("Failed: "+(res.error||"error"));
+  }
   async function remove(n){
     if(!confirm("Remove "+n+" from the team?")) return;
     const res=await apiPost({action:"removeIntern", name:n});
@@ -2106,7 +2111,7 @@ function TeamManager({interns,refresh,notify}){
   return (
     <div className="bg-white rounded-2xl border border-slate-200 p-4">
       <div className="flex items-center justify-between">
-        <div className="font-semibold">Team members ({interns.length})</div>
+        <div className="font-semibold">Team members ({interns.length}){interns.some(i=>i.muted) && <span className="ml-2 text-[11px] font-normal text-amber-700">{interns.filter(i=>i.muted).length} with emails stopped</span>}</div>
         <button onClick={()=>setOpen(!open)} className="text-sm px-3 py-1.5 rounded-lg bg-slate-100">{open?"Close":"Manage"}</button>
       </div>
       {interns.length===0 &&
@@ -2122,8 +2127,9 @@ function TeamManager({interns,refresh,notify}){
                 <button disabled={busy} onClick={cancelEdit} className="px-2 py-1.5 text-slate-500 text-xs">Cancel</button>
               </div>
             : <div key={i.name} className="flex items-center justify-between text-sm border-t border-slate-100 pt-2">
-                <span><b>{i.name}</b> <span className="text-slate-400">{i.email||"(no email)"}</span></span>
+                <span><b>{i.name}</b> <span className="text-slate-400">{i.email||"(no email)"}</span>{i.muted && <span className="ml-2 text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">emails stopped</span>}</span>
                 <span className="flex items-center gap-3">
+                  <button onClick={()=>toggleMute(i)} className={"text-xs "+(i.muted?"text-emerald-600":"text-amber-600")}>{i.muted?"resume emails":"stop emails"}</button>
                   <button onClick={()=>startEdit(i)} className="text-indigo-600 text-xs">edit</button>
                   <button onClick={()=>remove(i.name)} className="text-red-500 text-xs">remove</button>
                 </span>

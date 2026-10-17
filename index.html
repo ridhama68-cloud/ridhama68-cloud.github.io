@@ -904,7 +904,7 @@ function QuickSchedule({leads,user,refresh,notify}){
   }
 
   async function createLead(){
-    if(!nc.clinic.trim() && !nc.name.trim()){ notify("Enter a clinic or doctor name"); return; }
+    if(!nc.clinic.trim() && !nc.name.trim()){ notify("Enter a business or owner name"); return; }
     setSaving(true);
     const lead={Clinic:nc.clinic.trim(), Name:nc.name.trim(), Phone:nc.phone.trim(), Email:nc.email.trim(), Status:"New", "Assigned To": (user==="Team"?"Team":user)};
     const res=await apiPost({action:"upsert", lead});
@@ -963,9 +963,9 @@ function QuickSchedule({leads,user,refresh,notify}){
           ? <div className="space-y-2 border rounded-lg p-3 bg-slate-50">
               <div className="text-sm font-medium">New clinic</div>
               <input value={nc.clinic} onChange={e=>setNc({...nc,clinic:e.target.value})} placeholder="Clinic name" className="w-full border rounded-lg px-3 py-2 text-sm"/>
-              <input value={nc.name} onChange={e=>setNc({...nc,name:e.target.value})} placeholder="Doctor name" className="w-full border rounded-lg px-3 py-2 text-sm"/>
+              <input value={nc.name} onChange={e=>setNc({...nc,name:e.target.value})} placeholder="Owner name" className="w-full border rounded-lg px-3 py-2 text-sm"/>
               <input value={nc.phone} onChange={e=>setNc({...nc,phone:e.target.value})} placeholder="Phone number (e.g. 98765 43210)" className="w-full border rounded-lg px-3 py-2 text-sm"/>
-              <input type="email" value={nc.email} onChange={e=>setNc({...nc,email:e.target.value})} placeholder="Doctor email" className="w-full border rounded-lg px-3 py-2 text-sm"/>
+              <input type="email" value={nc.email} onChange={e=>setNc({...nc,email:e.target.value})} placeholder="Owner email" className="w-full border rounded-lg px-3 py-2 text-sm"/>
               <div className="flex gap-2">
                 <button onClick={createLead} disabled={saving} className="flex-1 py-2 rounded-lg bg-indigo-600 text-white text-sm disabled:opacity-40">{saving?"Creating…":"Create & select"}</button>
                 <button onClick={()=>setCreating(false)} className="px-3 py-2 rounded-lg bg-white border text-sm">Cancel</button>
@@ -988,10 +988,10 @@ function QuickSchedule({leads,user,refresh,notify}){
 
       {kind!=="internal" && sel &&
         <div>
-          <label className="text-xs font-medium text-slate-600">Doctor email <span className="text-red-500">*required</span></label>
-          <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="doctor@clinic.com"
+          <label className="text-xs font-medium text-slate-600">Owner email <span className="text-red-500">*required</span></label>
+          <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="name@business.com"
             className={"w-full border rounded-lg px-3 py-2 text-sm "+(email?"border-slate-200":"border-red-300 bg-red-50")}/>
-          <div className="text-[11px] text-slate-400 mt-0.5">Needed to send the doctor the meeting link — you can still save without it.</div>
+          <div className="text-[11px] text-slate-400 mt-0.5">Needed to send them the meeting link — you can still save without it.</div>
         </div>}
 
       {kind!=="internal" && sel &&
@@ -2002,7 +2002,7 @@ function EditLead({lead,onClose,refresh,notify}){
     <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl p-4 w-full max-w-sm space-y-2" onClick={e=>e.stopPropagation()}>
         <div className="font-semibold">Edit lead</div>
-        {[["Clinic","Clinic name"],["Name","Doctor name"],["Phone","Phone"],["Email","Doctor email"],["City","City"]].map(fld=>(
+        {[["Clinic","Clinic name"],["Name","Owner name"],["Phone","Phone"],["Email","Owner email"],["City","City"]].map(fld=>(
           <div key={fld[0]}>
             <label className="text-[11px] text-slate-500">{fld[1]}</label>
             <input value={f[fld[0]]} onChange={e=>setF(Object.assign({},f,{[fld[0]]:e.target.value}))} className="w-full border rounded-lg px-3 py-2 text-sm"/>

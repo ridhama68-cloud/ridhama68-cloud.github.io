@@ -21,7 +21,10 @@
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
 /* ================== CONFIG ================== */
-const API_URL = "https://script.google.com/macros/s/AKfycbw6_2z2rT-U2mmpFhRl8hysSYnxLqmyArFfZHUU9EnkbirL6wc4QchUs5rcXho28aOZVQ/exec";
+// Requests go through the Cloudflare accelerator (cached reads, reliable writes).
+// APPS_URL is the original Google backend; reads fall back to it if the accelerator is down.
+const API_URL = "https://reactivifyapi.reactivify.workers.dev";
+const APPS_URL = "https://script.google.com/macros/s/AKfycbw6_2z2rT-U2mmpFhRl8hysSYnxLqmyArFfZHUU9EnkbirL6wc4QchUs5rcXho28aOZVQ/exec";
 
 const OUTCOMES = [
   "Not Answering","Owner Not Available","Interested","Website Sent","Not Interested",
@@ -47,8 +50,10 @@ let _lastWriteAt=0;
 const NO_SYNC_ACTIONS={sessionPing:1,sessionStart:1,sessionEnd:1,deviceCheck:1,deviceStatus:1,adminAuth:1,reconcile:1,markNoRecording:1};
 async function apiGet(action, extraQuery){
   const since=(_lastWriteAt && /^(list|bootstrap|getStats|getSessions|getDevices|getDailyCalls)$/.test(action)) ? ("&since="+_lastWriteAt) : "";
-  const r = await fetch(API_URL + "?action=" + action + (extraQuery||"") + since);
-  const j = await r.json();
+  const q = "?action=" + action + (extraQuery||"") + since;
+  let r, j;
+  try{ r = await fetch(API_URL + q); j = await r.json(); }catch(e){ j = null; }
+  if(!j || (j.ok===false && /upstream/i.test(j.error||""))){ r = await fetch(APPS_URL + "?action=" + action + (extraQuery||"")); j = await r.json(); }
   if(j && typeof j==="object" && r.headers.get("x-cache")==="stale") j._stale=true;
   return j;
 }

@@ -41,7 +41,17 @@ const NON_CONVO = ["Not Answering","Owner Not Available","Dr Not Available"];
 const IDLE_MS = 120000;   // 2 minutes
 
 /* ================== API ================== */
-async function apiGet(action, extraQuery){ const r = await fetch(API_URL + "?action=" + action + (extraQuery||"")); return r.json(); }
+// Time of this browser's last real write (from the Worker's clock when available).
+// Sent with reads so a cached copy older than our own write is never served back to us.
+let _lastWriteAt=0;
+const NO_SYNC_ACTIONS={sessionPing:1,sessionStart:1,sessionEnd:1,deviceCheck:1,deviceStatus:1,adminAuth:1,reconcile:1,markNoRecording:1};
+async function apiGet(action, extraQuery){
+  const since=(_lastWriteAt && /^(list|bootstrap|getStats|getSessions|getDevices|getDailyCalls)$/.test(action)) ? ("&since="+_lastWriteAt) : "";
+  const r = await fetch(API_URL + "?action=" + action + (extraQuery||"") + since);
+  const j = await r.json();
+  if(j && typeof j==="object" && r.headers.get("x-cache")==="stale") j._stale=true;
+  return j;
+}
 // Writes use a plain text/plain POST (a CORS "simple request", no preflight).
 // Apps Script answers /exec with a 302 to googleusercontent, and that redirect
 // occasionally returns WITHOUT the CORS header -> fetch throws "Failed to fetch"
@@ -83,6 +93,7 @@ async function apiPost(payload){
         body: body
       });
       const res = await r.json();       // readable response == write persisted
+      if(!(res && res.ok===false) && !NO_SYNC_ACTIONS[payload.action]){ const wt=Number(r.headers.get("x-worker-time")); _lastWriteAt = wt>0 ? wt : Date.now(); }
       _optimisticPatch(payload, res);
       return res;
     }catch(e){
@@ -470,9 +481,15 @@ function App(){
     // waiting on Promise.all -- stats/sessions/devices are small and usually land
     // in well under a second; the leads list is the one that can take much longer
     // at this lead count, and there's no reason the other three should wait on it.
+    // If the server answered from a slightly old cached copy, quietly re-fetch twice
+    // (the fresh copy is being prepared in the background) so the screen catches up.
+    const loadList = function(attempt){
+      return apiGet("list", listQuery).then(function(l){ if(l.ok){ setLeads(l.leads||[]); setInterns(l.interns||[]);
+        try{ localStorage.setItem("reactivify_interns", JSON.stringify(l.interns||[])); }catch(e){}
+        if(l._stale && attempt<2) setTimeout(function(){ loadList(attempt+1).catch(function(){}); },15000); } });
+    };
     const tasks = [
-      apiGet("list", listQuery).then(function(l){ if(l.ok){ setLeads(l.leads||[]); setInterns(l.interns||[]);
-        try{ localStorage.setItem("reactivify_interns", JSON.stringify(l.interns||[])); }catch(e){} } }),
+      loadList(0),
       apiGet("getStats").then(function(st){ if(st.ok) setStats(st.stats||{}); }),
       apiGet("getSessions").then(function(se){ if(se.ok) setSessions(se.sessions||[]); }),
       apiGet("getDevices").then(function(dv){ if(dv && dv.ok) setDevices(dv.devices||[]); })

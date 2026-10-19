@@ -8,8 +8,38 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-  body { -webkit-tap-highlight-color: transparent; }
+  body { -webkit-tap-highlight-color: transparent; font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; -webkit-font-smoothing: antialiased; }
+  .tabular-nums { font-variant-numeric: tabular-nums; }
+  /* ---- motion system ---- */
+  @keyframes rv-fade-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @keyframes rv-pop { 0% { opacity: 0; transform: translateY(18px) scale(.8); } 14% { opacity: 1; transform: translateY(0) scale(1.08); } 24% { transform: scale(1); } 78% { opacity: 1; transform: translateY(-16px); } 100% { opacity: 0; transform: translateY(-34px); } }
+  @keyframes rv-modal { from { opacity: 0; transform: translateY(24px) scale(.9); } to { opacity: 1; transform: none; } }
+  @keyframes rv-bounce { 0%,100% { transform: translateY(0) rotate(0); } 30% { transform: translateY(-12px) rotate(-8deg); } 60% { transform: translateY(0) rotate(5deg); } }
+  @keyframes rv-shine { from { background-position: 200% 0, 0 0; } to { background-position: -200% 0, 0 0; } }
+  @keyframes rv-toast { from { opacity: 0; transform: translate(-50%, 14px) scale(.96); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
+  @keyframes rv-row { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
+  .rounded-2xl.border, .rounded-3xl { animation: rv-fade-up .38s cubic-bezier(.2,.8,.2,1) both; }
+  .bg-white.rounded-2xl.border { transition: box-shadow .25s ease, border-color .25s ease; }
+  .bg-white.rounded-2xl.border:hover { box-shadow: 0 10px 30px -18px rgba(49, 46, 129, .35); }
+  button, a { transition: transform .14s ease, background-color .2s ease, color .2s ease, box-shadow .2s ease, opacity .2s ease, border-color .2s ease; }
+  button:not(:disabled):active, a:active { transform: scale(.96); }
+  select, input, textarea { transition: border-color .2s ease, box-shadow .2s ease; }
+  select:focus, input:focus, textarea:focus { outline: none; border-color: #818cf8; box-shadow: 0 0 0 3px rgba(129, 140, 248, .25); }
+  .rv-toast { animation: rv-toast .3s cubic-bezier(.2,.9,.25,1.2) both; }
+  .game-pop { animation: rv-pop 1.7s cubic-bezier(.2,.8,.2,1) both; }
+  .game-modal { animation: rv-modal .5s cubic-bezier(.2,.9,.25,1.15) both; }
+  .game-fade { animation: rv-fade-up .25s ease both; }
+  .game-bounce { animation: rv-bounce 1.3s ease .25s both; }
+  .game-bar { transition: width 1s cubic-bezier(.2,.8,.2,1); }
+  .game-row { animation: rv-row .4s cubic-bezier(.2,.8,.2,1) both; }
+  .game-shine { background-image: linear-gradient(110deg, transparent 35%, rgba(255,255,255,.75) 50%, transparent 65%), linear-gradient(135deg, #fffbeb, #fef9c3); background-size: 250% 100%, 100% 100%; animation: rv-shine 3.2s linear infinite; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  }
   .no-scrollbar::-webkit-scrollbar { display: none; }
   .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 </style>
@@ -142,6 +172,7 @@ function applyPending(list){
 function saveInBackground(payload){
   payload.opId = payload.opId || newOpId();
   _localPatch(payload);
+  if(payload.logStat && payload.logStat.outcome) gameBump(payload.logStat.intern, payload.logStat.outcome, payload.opId);
   _outbox.push(payload); _outboxStuck=false; _outboxNotify();
   flushOutbox();
 }
@@ -153,7 +184,7 @@ async function flushOutbox(){
     const p=_outbox[0];
     const res=await apiPost(p);
     if(res && res.ok!==false){
-      _outbox.shift(); fails=0;
+      _outbox.shift(); fails=0; gameConfirm(p.opId);
       if(p.lead && (p.lead["Meeting Date"] || /booked/i.test(p.lead.Status||""))) _needFull=true;
       _outbox.forEach(function(q){ if(q.action==="upsert" && q.lead && p.lead && q.lead.ID===p.lead.ID) _localPatch(q); });
       _outboxNotify(); continue;
@@ -166,6 +197,7 @@ async function flushOutbox(){
   }
   _flushing=false; _outboxNotify();
   if(!_outbox.length){
+    gameLoad(true);
     try{ if(_needFull){ _needFull=false; if(_drainedFull) _drainedFull(); } else if(_drainedLight) _drainedLight(); }catch(e){}
   }
 }
@@ -192,6 +224,429 @@ function SyncBadge(){
     </div>
   );
 }
+
+/* ================== GAMIFICATION ==================
+   Everything here is computed from the per-day call log (getDailyCalls), the same data
+   as "Calls per day", so points always match real logged work. No extra backend. */
+const GAME_GOAL = 30;   // dials per day for the goal ring and streaks
+const GAME_PTS = { dial:1, convo:3, web:5, meet:15, showed:20, landed:50 };
+const LEVELS = [
+  {n:1, name:"Rookie",    min:0,    icon:"🌱"},
+  {n:2, name:"Dialer",    min:100,  icon:"📞"},
+  {n:3, name:"Connector", min:300,  icon:"🔗"},
+  {n:4, name:"Pitcher",   min:700,  icon:"🎯"},
+  {n:5, name:"Closer",    min:1500, icon:"🤝"},
+  {n:6, name:"Rainmaker", min:3000, icon:"💰"},
+  {n:7, name:"Legend",    min:6000, icon:"👑"}
+];
+const BADGES = [
+  {id:"first",   icon:"🚀", name:"Lift-off",      desc:"Log your first call",                    test:function(g){ return g.total.dials>=1; }},
+  {id:"goal",    icon:"🎯", name:"Goal Getter",   desc:"Hit the daily goal ("+GAME_GOAL+" dials)", test:function(g){ return g.best.dials>=GAME_GOAL; }},
+  {id:"d50",     icon:"💯", name:"Half Century",  desc:"50 dials in one day",                    test:function(g){ return g.best.dials>=50; }},
+  {id:"talk10",  icon:"💬", name:"Smooth Talker", desc:"10 conversations in one day",            test:function(g){ return g.best.convos>=10; }},
+  {id:"web5",    icon:"🌐", name:"Show & Tell",   desc:"Send 5 websites in one day",             test:function(g){ return g.best.web>=5; }},
+  {id:"meet1",   icon:"📅", name:"Door Opener",   desc:"Book your first meeting",                test:function(g){ return g.total.meet>=1; }},
+  {id:"hat",     icon:"🎩", name:"Hat-trick",     desc:"3 meetings booked in one day",           test:function(g){ return g.best.meet>=3; }},
+  {id:"show1",   icon:"🤩", name:"Showtime",      desc:"A booked client shows up",               test:function(g){ return g.total.showed>=1; }},
+  {id:"close1",  icon:"🏆", name:"Closer",        desc:"Land your first client",                 test:function(g){ return g.total.landed>=1; }},
+  {id:"streak3", icon:"🔥", name:"On Fire",       desc:"3-day goal streak",                      test:function(g){ return g.maxStreak>=3; }},
+  {id:"streak7", icon:"⚡", name:"Unstoppable",   desc:"7-day goal streak",                      test:function(g){ return g.maxStreak>=7; }},
+  {id:"pts1000", icon:"💎", name:"Thousand Club", desc:"Earn 1,000 points",                      test:function(g){ return g.points>=1000; }}
+];
+const G_KEYS = ["dials","convos","web","meet","showed","landed","points"];
+
+function gIso(d){ return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }
+function gZero(){ return {dials:0,convos:0,web:0,meet:0,showed:0,landed:0,points:0}; }
+function gAdd(a,b){ const o={}; G_KEYS.forEach(function(k){ o[k]=(a[k]||0)+(b[k]||0); }); return o; }
+function gRec(dayObj,name){
+  if(!dayObj || !name) return null;
+  const k=String(name).trim().toLowerCase();
+  for(const key in dayObj){ if(String(key).trim().toLowerCase()===k) return dayObj[key]; }
+  return null;
+}
+function gRecStats(rec){
+  const n=function(k){ return (rec && rec[k]) || 0; };
+  const showed=n("Showed Up");
+  const dials=Math.max(0, ((rec && rec.calls) || 0) - n("Dumped") - showed);
+  const convos=Math.max(0, dials - n("Not Answering"));
+  const web=n("Website Sent"), meet=n("Meeting Booked"), landed=n("Landed");
+  const points=dials*GAME_PTS.dial + convos*GAME_PTS.convo + web*GAME_PTS.web + meet*GAME_PTS.meet + showed*GAME_PTS.showed + landed*GAME_PTS.landed;
+  return {dials:dials,convos:convos,web:web,meet:meet,showed:showed,landed:landed,points:points};
+}
+function levelFor(points){
+  let cur=LEVELS[0];
+  LEVELS.forEach(function(l){ if(points>=l.min) cur=l; });
+  const next=LEVELS.find(function(l){ return l.min>points; }) || null;
+  return {cur:cur, next:next, pct: next ? Math.min(100, Math.round((points-cur.min)/(next.min-cur.min)*100)) : 100};
+}
+function personGame(daily,name){
+  const days=Object.keys(daily||{}).sort();
+  const today=todayISO();
+  const wk=new Date(); wk.setDate(wk.getDate()-6);
+  const wkIso=gIso(wk), monIso=today.slice(0,8)+"01";
+  let total=gZero(), best=gZero(), week=gZero(), month=gZero(), todayS=gZero();
+  const dialsBy={};
+  days.forEach(function(d){
+    const s=gRecStats(gRec(daily[d],name));
+    dialsBy[d]=s.dials;
+    total=gAdd(total,s);
+    G_KEYS.forEach(function(k){ if(s[k]>best[k]) best[k]=s[k]; });
+    if(d>=wkIso && d<=today) week=gAdd(week,s);
+    if(d>=monIso && d<=today) month=gAdd(month,s);
+    if(d===today) todayS=s;
+  });
+  // Streak = consecutive working days (Sundays skipped) hitting the goal. Today joins once it is hit.
+  const met=function(iso){ return (dialsBy[iso]||0)>=GAME_GOAL; };
+  let streak=0;
+  if(met(today)) streak++;
+  const c=new Date(); c.setDate(c.getDate()-1);
+  for(let i=0;i<150;i++){
+    if(c.getDay()===0){ c.setDate(c.getDate()-1); continue; }
+    if(met(gIso(c))){ streak++; c.setDate(c.getDate()-1); } else break;
+  }
+  let maxStreak=0, run=0;
+  if(days.length){
+    const s=new Date(days[0]+"T00:00:00"), e=new Date();
+    for(let i=0;i<400 && s<=e;i++){
+      if(s.getDay()!==0){ const iso=gIso(s); if(met(iso)){ run++; if(run>maxStreak) maxStreak=run; } else if(iso!==today) run=0; }
+      s.setDate(s.getDate()+1);
+    }
+  }
+  const g={name:name,total:total,best:best,week:week,month:month,today:todayS,points:total.points,streak:streak,maxStreak:Math.max(maxStreak,streak)};
+  g.level=levelFor(g.points);
+  g.badges=BADGES.filter(function(b){ return b.test(g); }).map(function(b){ return b.id; });
+  return g;
+}
+
+// ---- shared live store: server call log + this browser's not-yet-confirmed saves ----
+let _gDaily=null, _gVer=0, _gLoading=false, _gLastLoad=0, _gAgain=false, _gameTeam=[];
+const _gPending=[];
+const _gSubs=[];
+function _gEmit(){ _gVer++; _gSubs.slice().forEach(function(f){ try{ f(_gVer); }catch(e){} }); }
+function gameLoad(force){
+  // A forced reload asked for while one is already running must still happen afterwards,
+  // otherwise a just-confirmed call would be counted twice until the next poll.
+  if(_gLoading){ if(force) _gAgain=true; return; }
+  if(!force && Date.now()-_gLastLoad<5000) return;
+  _gLoading=true;
+  const started=Date.now();
+  apiGet("getDailyCalls").then(function(r){
+    if(r && r.ok){
+      _gDaily=r.daily||{}; _gLastLoad=Date.now();
+      for(let i=_gPending.length-1;i>=0;i--){ const b=_gPending[i]; if(b.confirmedAt && b.confirmedAt<started) _gPending.splice(i,1); }
+      _gEmit();
+    }
+  }).catch(function(){}).then(function(){
+    _gLoading=false;
+    if(_gAgain){ _gAgain=false; gameLoad(true); }
+  });
+}
+function gameDaily(){
+  if(!_gDaily && !_gPending.length) return null;
+  const base=_gDaily||{};
+  if(!_gPending.length) return base;
+  const out={};
+  Object.keys(base).forEach(function(d){ out[d]=Object.assign({},base[d]); });
+  _gPending.forEach(function(b){
+    const day=out[b.day]=Object.assign({}, out[b.day]||{});
+    let key=b.intern;
+    Object.keys(day).forEach(function(k){ if(k.toLowerCase()===String(b.intern).toLowerCase()) key=k; });
+    const rec=Object.assign({calls:0}, day[key]||{});
+    rec.calls=(rec.calls||0)+1;
+    rec[b.outcome]=(rec[b.outcome]||0)+1;
+    day[key]=rec;
+  });
+  return out;
+}
+function gameConfirm(opId){ _gPending.forEach(function(b){ if(b.opId===opId && !b.confirmedAt) b.confirmedAt=Date.now(); }); }
+function gameBump(intern,outcome,opId){
+  if(!intern || !outcome) return;
+  _gPending.push({intern:intern, outcome:outcome, day:todayISO(), opId:opId, confirmedAt:0});
+  _gEmit();
+  const one={calls:1}; one[outcome]=1;
+  const s=gRecStats(one);
+  if(s.points<=0) return;
+  const landed=/landed/i.test(outcome), meet=/meeting booked/i.test(outcome), show=/showed up/i.test(outcome);
+  const label = landed?"🏆 Client landed!" : meet?"📅 Meeting booked!" : show?"🤩 Show-up!" : /website sent/i.test(outcome)?"🌐 Website sent" : s.convos?"💬 Conversation":"📞 Dial";
+  fx({type:"pop", text:label+"   +"+s.points+" pts", tone:(landed||meet||show)?"bg-gradient-to-r from-amber-500 to-orange-500":(s.convos?"bg-gradient-to-r from-indigo-600 to-violet-600":"bg-slate-800")});
+  if(landed) confetti(2); else if(meet||show) confetti(1.2);
+}
+function useGame(){
+  const [ver,setVer]=useState(_gVer);
+  useEffect(function(){
+    _gSubs.push(setVer);
+    gameLoad();
+    const id=setInterval(function(){ if(!document.hidden) gameLoad(); },60000);
+    return function(){ const i=_gSubs.indexOf(setVer); if(i>=0) _gSubs.splice(i,1); clearInterval(id); };
+  },[]);
+  return useMemo(function(){ return gameDaily(); },[ver]);
+}
+function teamBoard(daily,range){
+  let names=(_gameTeam||[]).filter(function(i){ return i && i.name && !i.muted; }).map(function(i){ return i.name; });
+  if(!names.length){ const s={}; Object.keys(daily||{}).forEach(function(d){ Object.keys(daily[d]||{}).forEach(function(n){ if(n!=="Team") s[n]=1; }); }); names=Object.keys(s); }
+  return names.map(function(n){
+    const g=personGame(daily,n);
+    const s= range==="week" ? g.week : range==="month" ? g.month : g.today;
+    return {name:n, s:s, streak:g.streak, level:g.level.cur};
+  }).sort(function(a,b){ return (b.s.points-a.s.points) || (b.s.dials-a.s.dials) || a.name.localeCompare(b.name); });
+}
+
+// ---- effects: floating "+points", confetti, celebration cards ----
+const _fxSubs=[]; let _fxId=0;
+function fx(evt){ evt.id=++_fxId; _fxSubs.slice().forEach(function(f){ try{ f(evt); }catch(e){} }); }
+function confetti(power){ fx({type:"confetti", power:power||1}); }
+const _conf={parts:[], running:false, canvas:null};
+function runConfetti(cv,power){
+  if(!cv) return;
+  try{ if(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return; }catch(e){}
+  _conf.canvas=cv;
+  const W=window.innerWidth, H=window.innerHeight;
+  const colors=["#6366f1","#a855f7","#ec4899","#f59e0b","#10b981","#06b6d4","#facc15"];
+  const n=Math.round(110*(power||1));
+  for(let i=0;i<n;i++){
+    const fromLeft=i%2===0;
+    _conf.parts.push({
+      x: fromLeft ? W*0.15 : W*0.85, y: H*0.75,
+      vx: (fromLeft?1:-1)*(Math.random()*9+3), vy: -(Math.random()*16+9),
+      g: 0.33+Math.random()*0.1, w: 6+Math.random()*6, h: 9+Math.random()*7,
+      r: Math.random()*6.28, vr: (Math.random()-0.5)*0.4, c: colors[i%colors.length], born: performance.now()
+    });
+  }
+  if(_conf.running) return;
+  _conf.running=true;
+  let last=performance.now();
+  const frame=function(t){
+    const c=_conf.canvas; const dpr=window.devicePixelRatio||1;
+    const w=window.innerWidth, h=window.innerHeight;
+    if(c.width!==Math.round(w*dpr) || c.height!==Math.round(h*dpr)){ c.width=Math.round(w*dpr); c.height=Math.round(h*dpr); }
+    const ctx=c.getContext("2d"); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,w,h);
+    const k=Math.min(2,(t-last)/16.7); last=t;
+    _conf.parts=_conf.parts.filter(function(p){ return p.y<h+60 && t-p.born<3200; });
+    _conf.parts.forEach(function(p){
+      p.vy+=p.g*k; p.vx*=Math.pow(0.985,k); p.x+=p.vx*k; p.y+=p.vy*k; p.r+=p.vr*k;
+      ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.r);
+      ctx.globalAlpha=Math.max(0, Math.min(1, 1-(t-p.born-2200)/1000));
+      ctx.fillStyle=p.c; ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h*Math.abs(Math.cos(p.r*1.3))+1.5);
+      ctx.restore();
+    });
+    if(_conf.parts.length) requestAnimationFrame(frame); else { ctx.clearRect(0,0,w,h); _conf.running=false; }
+  };
+  requestAnimationFrame(frame);
+}
+function GameFX(){
+  const [pops,setPops]=useState([]);
+  const [modal,setModal]=useState(null);
+  const canvasRef=useRef(null);
+  useEffect(function(){
+    const h=function(e){
+      if(e.type==="pop"){
+        setPops(function(p){ return p.concat([e]).slice(-3); });
+        setTimeout(function(){ setPops(function(p){ return p.filter(function(x){ return x.id!==e.id; }); }); },1700);
+      } else if(e.type==="confetti") runConfetti(canvasRef.current, e.power);
+      else if(e.type==="modal") setModal(e);
+    };
+    _fxSubs.push(h);
+    return function(){ const i=_fxSubs.indexOf(h); if(i>=0) _fxSubs.splice(i,1); };
+  },[]);
+  return (
+    <React.Fragment>
+      <canvas ref={canvasRef} className="fixed inset-0 pointer-events-none" style={{width:"100vw",height:"100vh",zIndex:70}}/>
+      <div className="fixed left-1/2 bottom-24 flex flex-col items-center gap-2 pointer-events-none" style={{zIndex:65,transform:"translateX(-50%)"}}>
+        {pops.map(function(p){ return <div key={p.id} className={"game-pop px-4 py-2 rounded-full text-sm font-bold shadow-xl text-white whitespace-nowrap "+(p.tone||"bg-indigo-600")}>{p.text}</div>; })}
+      </div>
+      {modal &&
+        <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-4 game-fade" style={{zIndex:80,backdropFilter:"blur(4px)"}} onClick={()=>setModal(null)}>
+          <div className="game-modal relative overflow-hidden bg-white rounded-3xl p-8 max-w-sm w-full text-center shadow-2xl" onClick={e=>e.stopPropagation()}>
+            <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 opacity-90"/>
+            <div className="relative">
+              <div className="mx-auto w-24 h-24 rounded-full bg-white shadow-xl flex items-center justify-center text-5xl game-bounce">{modal.icon}</div>
+              <div className="text-xs uppercase tracking-widest text-indigo-600 font-bold mt-4">{modal.kicker}</div>
+              <div className="text-2xl font-extrabold mt-1 text-slate-900">{modal.title}</div>
+              <div className="text-sm text-slate-500 mt-2">{modal.body}</div>
+              <button onClick={()=>setModal(null)} className="mt-6 w-full py-3 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold shadow-lg">Let's go</button>
+            </div>
+          </div>
+        </div>}
+    </React.Fragment>
+  );
+}
+
+function useCountUp(v,ms){
+  const [d,setD]=useState(v);
+  const from=useRef(v);
+  useEffect(function(){
+    const a=from.current, b=v;
+    if(a===b){ setD(b); return; }
+    const t0=performance.now(); let raf;
+    const step=function(t){
+      const k=Math.min(1,(t-t0)/(ms||800)); const e=1-Math.pow(1-k,3);
+      setD(Math.round(a+(b-a)*e));
+      if(k<1) raf=requestAnimationFrame(step); else from.current=b;
+    };
+    raf=requestAnimationFrame(step);
+    return function(){ cancelAnimationFrame(raf); from.current=b; };
+  },[v]);
+  return d;
+}
+function GoalRing({value,goal,size}){
+  size=size||104;
+  const stroke=10, r=(size-stroke)/2, C=2*Math.PI*r;
+  const [shown,setShown]=useState(0);
+  useEffect(function(){ const id=setTimeout(function(){ setShown(value||0); },60); return function(){ clearTimeout(id); }; },[value]);
+  const pct=Math.min(1,(shown||0)/goal), done=(value||0)>=goal;
+  const num=useCountUp(value||0);
+  return (
+    <div className="relative shrink-0" style={{width:size,height:size}}>
+      <svg width={size} height={size} style={{transform:"rotate(-90deg)"}}>
+        <circle cx={size/2} cy={size/2} r={r} stroke="rgba(255,255,255,0.22)" strokeWidth={stroke} fill="none"/>
+        <circle cx={size/2} cy={size/2} r={r} stroke={done?"#fde047":"#ffffff"} strokeWidth={stroke} fill="none" strokeLinecap="round"
+          strokeDasharray={C} strokeDashoffset={C*(1-pct)} style={{transition:"stroke-dashoffset 1s cubic-bezier(.2,.8,.2,1), stroke .4s"}}/>
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center leading-none">
+        <div className="text-3xl font-extrabold tabular-nums">{num}</div>
+        <div className="text-[10px] opacity-80 mt-1">{done?"goal hit! 🎯":("of "+goal+" dials")}</div>
+      </div>
+    </div>
+  );
+}
+function HudStat({big,label}){
+  return <div className="text-center bg-white/15 rounded-2xl px-3 py-2 min-w-[76px]"><div className="text-lg font-extrabold leading-tight tabular-nums">{big}</div><div className="text-[10px] opacity-80 whitespace-nowrap">{label}</div></div>;
+}
+function Avatar({name,size}){
+  const colors=["from-indigo-500 to-violet-500","from-pink-500 to-rose-500","from-amber-500 to-orange-500","from-emerald-500 to-teal-500","from-sky-500 to-cyan-500","from-fuchsia-500 to-purple-500"];
+  let h=0; String(name||"?").split("").forEach(function(ch){ h=(h*31+ch.charCodeAt(0))>>>0; });
+  const s=size||36;
+  return <div className={"rounded-full bg-gradient-to-br text-white font-bold flex items-center justify-center shrink-0 shadow-sm "+colors[h%colors.length]} style={{width:s,height:s,fontSize:s*0.42}}>{String(name||"?").charAt(0).toUpperCase()}</div>;
+}
+
+function GameHUD({user}){
+  const daily=useGame();
+  const g=useMemo(function(){ return daily ? personGame(daily,user) : null; },[daily,user]);
+  const board=useMemo(function(){ return daily ? teamBoard(daily,"today") : []; },[daily]);
+  const [panel,setPanel]=useState("");
+  const pts=useCountUp(g ? g.today.points : 0);
+  const xp=useCountUp(g ? g.points : 0);
+  const lvl=g ? g.level.cur.n : 0, badgeKey=g ? g.badges.join(",") : "", goalHit=g ? g.today.dials>=GAME_GOAL : false;
+  // Celebrate level-ups, new badges and hitting today's goal (remembered per person on this device).
+  useEffect(function(){
+    if(!g) return;
+    const k="reactivify.game."+String(user).toLowerCase();
+    let prev=null; try{ prev=JSON.parse(localStorage.getItem(k)||"null"); }catch(e){}
+    const today=todayISO();
+    const now={level:g.level.cur.n, badges:g.badges, goalDay: goalHit ? today : ((prev && prev.goalDay) || "")};
+    if(prev){
+      const fresh=g.badges.filter(function(b){ return (prev.badges||[]).indexOf(b)<0; });
+      if(now.level>prev.level){
+        confetti(1.6);
+        fx({type:"modal", icon:g.level.cur.icon, kicker:"Level up", title:"You're now a "+g.level.cur.name+"!", body:"Level "+g.level.cur.n+" unlocked with "+g.points.toLocaleString()+" points. Keep that streak alive."});
+      } else if(fresh.length){
+        const b=BADGES.find(function(x){ return x.id===fresh[0]; });
+        confetti(0.9);
+        fx({type:"modal", icon:b.icon, kicker:"Badge unlocked", title:b.name, body:b.desc+(fresh.length>1?("  (+"+(fresh.length-1)+" more)"):"")});
+      } else if(goalHit && prev.goalDay!==today){
+        confetti(1.3);
+        fx({type:"pop", text:"🎯 Daily goal smashed!"+(g.streak>1?("  🔥 "+g.streak+"-day streak"):""), tone:"bg-gradient-to-r from-amber-500 to-orange-500"});
+      }
+    }
+    try{ localStorage.setItem(k, JSON.stringify(now)); }catch(e){}
+  },[lvl,badgeKey,goalHit,user]);
+
+  if(!g) return <div className="rounded-3xl h-36 bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600 opacity-70 animate-pulse"/>;
+  const rank=board.findIndex(function(r){ return r.name.toLowerCase()===String(user).toLowerCase(); })+1;
+  const left=GAME_GOAL-g.today.dials;
+  return (
+    <div className="space-y-3">
+      <div className="game-hud relative overflow-hidden rounded-3xl p-4 sm:p-5 text-white shadow-xl bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600">
+        <div className="absolute -right-12 -top-12 w-44 h-44 rounded-full bg-white/10" style={{filter:"blur(24px)"}}/>
+        <div className="absolute -left-10 -bottom-16 w-48 h-48 rounded-full bg-fuchsia-300/20" style={{filter:"blur(30px)"}}/>
+        <div className="relative flex items-center gap-4 flex-wrap">
+          <GoalRing value={g.today.dials} goal={GAME_GOAL}/>
+          <div className="flex-1 min-w-[180px]">
+            <div className="text-[11px] uppercase tracking-widest opacity-75">Hey {user}</div>
+            <div className="flex items-center gap-2 mt-0.5"><span className="text-xl">{g.level.cur.icon}</span><span className="font-bold text-lg">Level {g.level.cur.n} · {g.level.cur.name}</span></div>
+            <div className="mt-2 h-2.5 rounded-full bg-white/20 overflow-hidden"><div className="h-full rounded-full bg-gradient-to-r from-amber-300 to-yellow-200 game-bar" style={{width:g.level.pct+"%"}}/></div>
+            <div className="text-[11px] opacity-85 mt-1 tabular-nums">{g.level.next ? (xp.toLocaleString()+" / "+g.level.next.min.toLocaleString()+" XP to "+g.level.next.icon+" "+g.level.next.name) : (xp.toLocaleString()+" XP · top level reached")}</div>
+          </div>
+          <div className="flex gap-2">
+            <HudStat big={"+"+pts} label="points today"/>
+            <HudStat big={(g.streak>0?"🔥 ":"")+g.streak} label="day streak"/>
+            <HudStat big={rank ? ("#"+rank) : "–"} label="rank today"/>
+          </div>
+        </div>
+        <div className="relative mt-3 flex gap-2 flex-wrap items-center text-xs">
+          <button onClick={()=>setPanel(panel==="board"?"":"board")} className={"px-3 py-1.5 rounded-full font-medium "+(panel==="board"?"bg-white text-indigo-700":"bg-white/15 hover:bg-white/25")}>🏆 Leaderboard</button>
+          <button onClick={()=>setPanel(panel==="badges"?"":"badges")} className={"px-3 py-1.5 rounded-full font-medium "+(panel==="badges"?"bg-white text-indigo-700":"bg-white/15 hover:bg-white/25")}>🏅 Badges {g.badges.length}/{BADGES.length}</button>
+          <span className="ml-auto opacity-85">{left>0 ? (left+" more dial"+(left>1?"s":"")+" to today's goal") : "Goal hit! Every call now is bonus XP ✨"}</span>
+        </div>
+      </div>
+      {panel==="board" && <Leaderboard me={user}/>}
+      {panel==="badges" && <BadgeShelf g={g}/>}
+    </div>
+  );
+}
+
+function Leaderboard({me,title}){
+  const daily=useGame();
+  const [range,setRange]=useState("today");
+  const rows=useMemo(function(){ return daily ? teamBoard(daily,range) : []; },[daily,range]);
+  const top=rows.length ? Math.max(1,rows[0].s.points) : 1;
+  const medals=["🥇","🥈","🥉"];
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-4">
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+        <div className="font-semibold">{title || "🏆 Leaderboard"}</div>
+        <div className="flex gap-1 bg-slate-100 rounded-full p-1 text-xs">
+          {[["today","Today"],["week","7 days"],["month","This month"]].map(function(r){ return <button key={r[0]} onClick={()=>setRange(r[0])} className={"px-3 py-1 rounded-full "+(range===r[0]?"bg-white shadow font-medium":"text-slate-600")}>{r[1]}</button>; })}
+        </div>
+      </div>
+      {!daily && <div className="text-sm text-slate-400">Loading…</div>}
+      {daily && rows.length===0 && <div className="text-sm text-slate-400">No activity yet.</div>}
+      <div className="space-y-1.5">
+        {rows.map(function(r,i){
+          const isMe=me && r.name.toLowerCase()===String(me).toLowerCase();
+          return (
+            <div key={r.name} className={"game-row flex items-center gap-3 rounded-xl px-2 py-2 "+(isMe?"bg-indigo-50 ring-1 ring-indigo-200":"hover:bg-slate-50")} style={{animationDelay:(i*55)+"ms"}}>
+              <div className="w-7 text-center text-lg">{i<3 && r.s.points>0 ? medals[i] : <span className="text-sm text-slate-400 font-semibold">{i+1}</span>}</div>
+              <Avatar name={r.name}/>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold truncate">{r.name}{isMe?" (you)":""}</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 whitespace-nowrap">{r.level.icon} {r.level.name}</span>
+                  {r.streak>0 && <span className="text-[11px] text-orange-500 font-semibold">🔥{r.streak}</span>}
+                </div>
+                <div className="mt-1 h-1.5 rounded-full bg-slate-100 overflow-hidden"><div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-fuchsia-500 game-bar" style={{width:Math.round(r.s.points/top*100)+"%"}}/></div>
+                <div className="text-[11px] text-slate-500 mt-1 tabular-nums">📞 {r.s.dials} · 💬 {r.s.convos} · 🌐 {r.s.web} · 📅 {r.s.meet}{r.s.landed?(" · 🏆 "+r.s.landed):""}</div>
+              </div>
+              <div className="text-right"><div className="font-extrabold text-indigo-700 tabular-nums">{r.s.points}</div><div className="text-[10px] text-slate-400">pts</div></div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="text-[11px] text-slate-400 mt-3">Points: dial 1 · conversation +3 · website sent +5 · meeting booked +15 · show-up +20 · landed +50 · daily goal {GAME_GOAL} dials</div>
+    </div>
+  );
+}
+
+function BadgeShelf({g}){
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-4">
+      <div className="font-semibold mb-3">🏅 Badges <span className="text-slate-400 font-normal text-sm">{g.badges.length}/{BADGES.length} unlocked</span></div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        {BADGES.map(function(b){
+          const has=g.badges.indexOf(b.id)>=0;
+          return (
+            <div key={b.id} className={"rounded-2xl p-3 border text-center "+(has?"game-shine border-amber-200":"bg-slate-50 border-slate-200")}>
+              <div className={"text-3xl "+(has?"":"opacity-30 grayscale")}>{b.icon}</div>
+              <div className={"text-sm font-semibold mt-1 "+(has?"text-slate-800":"text-slate-400")}>{b.name}</div>
+              <div className="text-[11px] text-slate-500">{b.desc}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 
 /* ============ DEVICE IDENTITY (intern login approval) ============ */
 // A stable per-browser id. Persists in localStorage, so one approval lasts
@@ -534,6 +989,7 @@ function App(){
   const [leads,setLeads]=useState([]);
   _setLeadsRef = setLeads;
   const [interns,setInterns]=useState(()=>{ try{ const c=localStorage.getItem("reactivify_interns"); return c?JSON.parse(c):[]; }catch(e){ return []; } });
+  _gameTeam = interns;
   const [stats,setStats]=useState({});
   const [sessions,setSessions]=useState([]);
   const [devices,setDevices]=useState([]);
@@ -638,6 +1094,7 @@ function App(){
   return (
     <div className="min-h-screen">
       <SyncBadge/>
+      <GameFX/>
       <Header user={user} isAdmin={isAdmin} session={session}
         onSwitch={()=>{ if(isAdmin){ clearAdminKey(); setAdminAuthed(false); setUser(null); } else setLogoutOpen(true); }} onRefresh={refresh}
         loading={loading} notifPerm={notifPerm} onEnableNotif={askNotif}/>
@@ -660,7 +1117,7 @@ function App(){
 }
 function NotifierMount({events}){ useNotifier(events); return null; }
 
-function Toast({msg}){ return <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-full shadow-lg z-50">{msg}</div>; }
+function Toast({msg}){ return <div key={msg} className="rv-toast fixed bottom-4 left-1/2 bg-slate-900/95 text-white text-sm px-4 py-2 rounded-full shadow-xl z-50" style={{transform:"translateX(-50%)"}}>{msg}</div>; }
 
 /* ================== WORK STATUS BADGE ================== */
 function WorkStatusBadge({session}){
@@ -1458,6 +1915,7 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
 
       {section==="dashboard" && <React.Fragment>
         <WorkAsBar internNames={internNames} onOpen={setWorkAs}/>
+        <Leaderboard title="🏆 Team Arena"/>
         <FunnelDashboard leads={leads} internNames={internNames}/>
         <SummaryCards leads={leads}/>
         <TeamActivity sessions={sessions} internNames={internNames}/>
@@ -2830,6 +3288,7 @@ function InternView({user,leads,stats,refresh,notify,actor}){
 
   return (
     <div className="p-4 max-w-2xl mx-auto space-y-4">
+      <GameHUD user={user}/>
       <div className="flex items-center justify-between">
         <StatsBar s={myStats} today={callsToday}/>
         <div className="flex gap-1 bg-slate-100 rounded-full p-1">

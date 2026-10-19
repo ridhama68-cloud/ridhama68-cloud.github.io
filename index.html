@@ -2947,6 +2947,7 @@ function InternListItem({l,refresh,notify,onEdit,actor}){
           {l.Phone && <a href={"tel:"+digits(l.Phone)} className="px-2 py-1 rounded-lg bg-green-50 text-green-700 text-xs">📞</a>}
           {mu && <a href={mu} target="_blank" rel="noopener" className="px-2 py-1 rounded-lg bg-blue-50 text-blue-700 text-xs">📍 Map</a>}
           <button onClick={()=>onEdit(l)} className="px-2 py-1 rounded-lg text-slate-400 hover:text-indigo-600 text-sm">✎</button>
+          {actor==="Team" && <button onClick={()=>{ if(confirm("Move "+(l.Clinic||l.Name||"this lead")+" to the Recycle bin?")) archiveLeadsApi([l.ID],"bin","Deleted from queue (admin)",refresh,notify); }} title="Delete (moves to the Recycle bin)" className="px-2 py-1 rounded-lg text-red-500 border border-red-200 text-xs hover:text-red-700">Delete</button>}
         </div>
       </div>
       <div className="mt-1.5 flex items-center gap-2 flex-wrap">
@@ -3124,6 +3125,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
       </div>
       {mapsUrl(lead) && <a href={mapsUrl(lead)} target="_blank" rel="noopener" className="block text-center text-sm text-blue-600">📍 Open in Google Maps</a>}
       <div className="flex items-center justify-center gap-1"><span className="text-[11px] text-slate-500">Grade:</span><PriorityRating lead={lead} refresh={onSaved} notify={notify}/></div>
+      {actor==="Team" && <div className="text-center"><button onClick={async()=>{ if(!confirm("Move "+(lead.Clinic||lead.Name||"this lead")+" to the Recycle bin?")) return; await archiveLeadsApi([lead.ID],"bin","Deleted from "+user+"'s queue (admin)",onSaved,notify); }} className="text-xs text-red-500 border border-red-200 rounded-lg px-3 py-1 hover:text-red-700">🗑 Delete this lead</button></div>}
 
       {booked && lead["Meeting Date"] &&
         <div className="bg-green-50 rounded-xl p-3 text-sm space-y-2">

@@ -86,9 +86,10 @@ function _optimisticPatch(payload, res){
   }catch(e){ /* best-effort only -- refresh() reconciles regardless */ }
 }
 function clearAdminKey(){ try{ sessionStorage.removeItem("reactivify.adminKey"); }catch(e){} }
+function newOpId(){ try{ return crypto.randomUUID(); }catch(e){ return "op"+Date.now()+Math.random().toString(36).slice(2); } }
 async function apiPost(payload){
   let adminKey=""; try{ adminKey=sessionStorage.getItem("reactivify.adminKey")||""; }catch(e){}
-  const body = JSON.stringify(adminKey?Object.assign({adminKey:adminKey},payload):payload);
+  const body = JSON.stringify(Object.assign({opId:newOpId()}, adminKey?{adminKey:adminKey}:{}, payload));
   let lastErr = null;
   for(let attempt=0; attempt<8; attempt++){
     try{
@@ -107,6 +108,76 @@ async function apiPost(payload){
     }
   }
   return { ok:false, error:(lastErr && lastErr.message) || "network" };
+}
+
+/* ============ BACKGROUND SAVE QUEUE ============
+   Lead saves return instantly: the screen updates and moves on, while the write is sent
+   in the background (in order, with retries). Unsent saves survive a reload (localStorage). */
+const OUTBOX_KEY="reactivify.outbox";
+let _outbox=[]; try{ _outbox=JSON.parse(localStorage.getItem(OUTBOX_KEY)||"[]")||[]; }catch(e){ _outbox=[]; }
+let _flushing=false, _outboxStuck=false, _needFull=false;
+let _toastRef=null, _drainedLight=null, _drainedFull=null;
+const _outboxSubs=[];
+function _outboxNotify(){
+  try{ localStorage.setItem(OUTBOX_KEY, JSON.stringify(_outbox)); }catch(e){}
+  _outboxSubs.forEach(function(f){ f({n:_outbox.length, flushing:_flushing, stuck:_outboxStuck}); });
+}
+function _patchFor(p){ const patch=Object.assign({},p.lead); if(p.logStat && p.logStat.outcome) patch["Last Follow-up Date"]=todayISO(); return patch; }
+function _localPatch(p){
+  if(!_setLeadsRef || !p || p.action!=="upsert" || !p.lead || !p.lead.ID) return;
+  const patch=_patchFor(p);
+  _setLeadsRef(function(cur){
+    const i=cur.findIndex(function(l){ return String(l.ID)===String(patch.ID); });
+    if(i<0) return cur;
+    const next=cur.slice(); next[i]=Object.assign({},cur[i],patch); return next;
+  });
+}
+// A refreshed list must not erase saves that are still waiting to be sent.
+function applyPending(list){
+  if(!_outbox.length) return list;
+  const by={};
+  _outbox.forEach(function(p){ if(p.action==="upsert" && p.lead && p.lead.ID) by[p.lead.ID]=Object.assign(by[p.lead.ID]||{}, _patchFor(p)); });
+  return list.map(function(l){ return by[l.ID] ? Object.assign({},l,by[l.ID]) : l; });
+}
+function saveInBackground(payload){
+  payload.opId = payload.opId || newOpId();
+  _localPatch(payload);
+  _outbox.push(payload); _outboxStuck=false; _outboxNotify();
+  flushOutbox();
+}
+async function flushOutbox(){
+  if(_flushing) return;
+  _flushing=true; _outboxStuck=false; _outboxNotify();
+  let fails=0;
+  while(_outbox.length){
+    const p=_outbox[0];
+    const res=await apiPost(p);
+    if(res && res.ok!==false){
+      _outbox.shift(); fails=0;
+      if(p.lead && (p.lead["Meeting Date"] || /booked/i.test(p.lead.Status||""))) _needFull=true;
+      _outbox.forEach(function(q){ if(q.action==="upsert" && q.lead && p.lead && q.lead.ID===p.lead.ID) _localPatch(q); });
+      _outboxNotify(); continue;
+    }
+    const err=(res && res.error) || "";
+    if(/unauthorized|unknown action/i.test(err)){ _outbox.shift(); _outboxNotify(); if(_toastRef) _toastRef("A save was rejected: "+err); continue; }
+    fails++;
+    if(fails>=5){ _outboxStuck=true; break; }
+    await new Promise(function(r){ setTimeout(r, 2000*fails); });
+  }
+  _flushing=false; _outboxNotify();
+  if(!_outbox.length){
+    try{ if(_needFull){ _needFull=false; if(_drainedFull) _drainedFull(); } else if(_drainedLight) _drainedLight(); }catch(e){}
+  }
+}
+function SyncBadge(){
+  const [st,setSt]=useState({n:_outbox.length, flushing:_flushing, stuck:_outboxStuck});
+  useEffect(function(){ _outboxSubs.push(setSt); return function(){ const i=_outboxSubs.indexOf(setSt); if(i>=0) _outboxSubs.splice(i,1); }; },[]);
+  if(!st.n) return null;
+  return (
+    <div className={"fixed bottom-3 right-3 z-50 text-xs px-3 py-2 rounded-xl shadow-lg text-white "+(st.stuck?"bg-red-600":"bg-slate-800")}>
+      {st.stuck ? <span>{st.n} unsaved <button onClick={flushOutbox} className="underline ml-1 font-semibold">Retry</button></span> : <span>Saving {st.n}{"…"}</span>}
+    </div>
+  );
 }
 
 /* ============ DEVICE IDENTITY (intern login approval) ============ */
@@ -489,7 +560,7 @@ function App(){
     // If the server answered from a slightly old cached copy, quietly re-fetch twice
     // (the fresh copy is being prepared in the background) so the screen catches up.
     const loadList = function(attempt){
-      return apiGet("list", listQuery).then(function(l){ if(l.ok){ setLeads(l.leads||[]); setInterns(l.interns||[]);
+      return apiGet("list", listQuery).then(function(l){ if(l.ok){ setLeads(applyPending(l.leads||[])); setInterns(l.interns||[]);
         try{ localStorage.setItem("reactivify_interns", JSON.stringify(l.interns||[])); }catch(e){}
         if(l._stale && attempt<2) setTimeout(function(){ loadList(attempt+1).catch(function(){}); },15000); } });
     };
@@ -504,6 +575,13 @@ function App(){
   },[configMissing,user]);
 
   useEffect(()=>{ if(user) refresh(); },[user,refresh]);
+  useEffect(()=>{ _toastRef=notify; _drainedLight=refreshLight; _drainedFull=refresh; },[refresh,refreshLight]);
+  useEffect(()=>{
+    if(_outbox.length) flushOutbox();
+    const h=function(e){ if(_outbox.length){ e.preventDefault(); e.returnValue=""; } };
+    window.addEventListener("beforeunload",h);
+    return ()=>window.removeEventListener("beforeunload",h);
+  },[]);
   // Re-run the device gate on every login/switch (admin is exempt in render).
   useEffect(()=>{ setDeviceOk(false); },[user]);
   // keep data fresh so countdowns/notifications stay accurate. Pause polling when
@@ -546,6 +624,7 @@ function App(){
 
   return (
     <div className="min-h-screen">
+      <SyncBadge/>
       <Header user={user} isAdmin={isAdmin} session={session}
         onSwitch={()=>{ if(isAdmin){ clearAdminKey(); setAdminAuthed(false); setUser(null); } else setLogoutOpen(true); }} onRefresh={refresh}
         loading={loading} notifPerm={notifPerm} onEnableNotif={askNotif}/>
@@ -2677,9 +2756,9 @@ function InternListItem({l,refresh,notify,onEdit,actor}){
       const hist=String(l.Notes||"").trim(); patch.Notes=hist?(hist+"\n"+entry):entry; }
     const payload={action:"upsert", lead:patch};
     if(statusChanged) payload.logStat={intern:l["Assigned To"]||"", outcome:pendingStatus};
-    const res=await apiPost(payload);
+    saveInBackground(payload);
     savingRef.current=false; setSaving(false);
-    if(res.ok){ setNote(""); setOpen(false); notify("Saved ✓"); refreshLight(); } else notify("Failed: "+(res.error||""));
+    setNote(""); setOpen(false); notify("Saved ✓");
   }
   // Safety-net autosave: only once BOTH a (changed) status AND a note are present.
   // Debounced so it doesn't fire mid-typing. Manual Save always works too.
@@ -2836,9 +2915,9 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
     const payload={action:"upsert", lead:patch};
     // count this as a logged call outcome (accurate cumulative stats)
     if(effOutcome && !opts.noStat) payload.logStat={intern:user, outcome:effOutcome};
-    const res=await apiPost(payload);
+    saveInBackground(payload);
     setSaving(false);
-    if(res.ok){ notify(opts.msg||"Saved"); onSaved(); if(!opts.stay) onNext(); } else notify("Save failed: "+res.error);
+    notify(opts.msg||"Saved"); if(!opts.stay) onNext();
   }
   function confirmPicker(){
     if(picker==="meeting") save({Status:"Meeting Booked","Meeting Date":dt.date,"Meeting Time":dt.time},{outcome:"Meeting Booked"});

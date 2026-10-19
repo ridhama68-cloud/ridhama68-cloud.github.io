@@ -174,7 +174,7 @@ async function flushOutbox(){
 async function archiveLeadsApi(ids,state,note,refresh,notify){
   if(_setLeadsRef){ const rm=new Set(ids); _setLeadsRef(function(cur){ return cur.filter(function(l){ return !rm.has(l.ID); }); }); }
   const res=await apiPost({action:"archive", ids:ids, state:state, note:note||""});
-  if(res && res.ok){ notify((state==="buried"?"Buried ":"Moved to bin: ")+(res.archived!=null?res.archived:ids.length)); }
+  if(res && res.ok){ notify((state==="buried"?"Archived ":"Moved to bin: ")+(res.archived!=null?res.archived:ids.length)); }
   else {
     const err=(res&&res.error)||"error";
     notify("Failed: "+err+(/unknown action/i.test(err)?" (the backend needs the latest deploy)":""));
@@ -1443,7 +1443,7 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
     );
   }
 
-  const tabs=[["dashboard","📊 Dashboard"],["leads","📇 Leads"],["pipeline","✅ Pipeline"],["team","👥 Team"],["bin","🗑 Bin"]];
+  const tabs=[["dashboard","📊 Dashboard"],["leads","📇 Leads"],["pipeline","✅ Pipeline"],["team","👥 Team"],["archive","🗄 Archive"],["bin","🗑 Bin"]];
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-4">
       <div className="flex gap-1 bg-slate-100 rounded-full p-1 w-max">
@@ -1476,6 +1476,7 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
         <DeviceAccess devices={devices} refresh={refresh} notify={notify}/>
       </React.Fragment>}
 
+      {section==="archive" && <ArchiveSection leads={leads} refresh={refresh} notify={notify}/>}
       {section==="bin" && <ArchivePanel kind="bin" refresh={refresh} notify={notify}/>}
 
       {section==="leads" && <React.Fragment>
@@ -2216,6 +2217,69 @@ function PriorityRating({lead,refresh,notify,label}){
     </div>
   );
 }
+/* ================== ARCHIVE (hide whole niches, restore any time) ================== */
+function ArchiveSection({leads,refresh,notify}){
+  const KEEP="interior designer";
+  const [busy,setBusy]=useState("");
+  const [tick,setTick]=useState(0);
+  const groups={};
+  leads.forEach(function(l){
+    const f=String(l.Folder||"").trim()||"(no niche)";
+    const g=groups[f]||(groups[f]={name:f,ids:[],worked:0,active:0});
+    g.ids.push(l.ID);
+    const st=String(l.Status||"New");
+    if(st.toLowerCase()!=="new") g.worked++;
+    if(/booked|interested|website sent|landed/i.test(st)) g.active++;
+  });
+  const list=Object.keys(groups).map(function(k){ return groups[k]; }).sort(function(a,b){ return b.ids.length-a.ids.length; });
+  const keep=list.filter(function(g){ return g.name.toLowerCase()===KEEP; });
+  const rest=list.filter(function(g){ return g.name.toLowerCase()!==KEEP; });
+  const restIds=[].concat.apply([],rest.map(function(g){ return g.ids; })).filter(Boolean);
+  async function archive(groupsToArchive,label){
+    const ids=[].concat.apply([],groupsToArchive.map(function(g){ return g.ids; })).filter(Boolean);
+    if(!ids.length) return;
+    const active=groupsToArchive.reduce(function(a,g){ return a+g.active; },0);
+    const msg="Archive "+ids.length+" lead"+(ids.length>1?"s":"")+" ("+label+")?\n\n"
+      +"They disappear from every list, count, intern queue and reminder."
+      +(active?("\n"+active+" of them are booked / interested / website-sent / landed. Booked meetings are taken off your calendar."):"")
+      +"\nNothing is deleted: restore them any time from this tab.";
+    if(!confirm(msg)) return;
+    setBusy(label);
+    await archiveLeadsApi(ids,"buried","Archived: not an interior designer lead",refresh,notify);
+    setBusy(""); setTick(function(t){ return t+1; });
+  }
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
+        <div>
+          <div className="font-semibold">Archive by niche</div>
+          <div className="text-xs text-slate-500">Hide leads you are not working right now. They vanish from every list, count and queue (and the site loads faster); restore any time below.</div>
+        </div>
+        {rest.length===0
+          ? <div className="text-sm text-slate-500">Every active lead is already in the {keep.length?keep[0].name:"main"} niche. Nothing to archive.</div>
+          : <div className="overflow-x-auto no-scrollbar">
+              <table className="w-full text-sm">
+                <thead className="text-slate-500 text-left"><tr><th className="py-1 pr-3">Niche</th><th className="py-1 px-2">Leads</th><th className="py-1 px-2">Worked</th><th className="py-1 px-2">Booked / warm</th><th className="py-1 px-2"></th></tr></thead>
+                <tbody>
+                  {keep.map(function(g){ return (
+                    <tr key={g.name} className="border-t border-slate-100 text-slate-400"><td className="py-2 pr-3 font-medium">{g.name} <span className="text-[11px]">(kept)</span></td><td className="px-2">{g.ids.length}</td><td className="px-2">{g.worked}</td><td className="px-2">{g.active}</td><td></td></tr>); })}
+                  {rest.map(function(g){ return (
+                    <tr key={g.name} className="border-t border-slate-100">
+                      <td className="py-2 pr-3 font-medium">{g.name}</td><td className="px-2">{g.ids.length}</td><td className="px-2">{g.worked}</td><td className="px-2">{g.active}</td>
+                      <td className="px-2 text-right"><button disabled={!!busy} onClick={()=>archive([g],g.name)} className="px-3 py-1 rounded-lg bg-slate-800 text-white text-xs disabled:opacity-40">{busy===g.name?"Archiving\u2026":"Archive "+g.ids.length}</button></td>
+                    </tr>); })}
+                </tbody>
+              </table>
+            </div>}
+        {rest.length>0 &&
+          <button disabled={!!busy} onClick={()=>archive(rest,"everything except Interior Designer")} className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-sm font-medium disabled:opacity-40">
+            {busy?"Archiving\u2026":"Archive everything except Interior Designer ("+restIds.length+")"}</button>}
+      </div>
+      <ArchivePanel key={tick} kind="buried" refresh={refresh} notify={notify}/>
+    </div>
+  );
+}
+
 /* ================== RECYCLE BIN / BURIED ================== */
 function ArchivePanel({kind,refresh,notify}){
   const [rows,setRows]=useState(null);
@@ -2263,8 +2327,8 @@ function ArchivePanel({kind,refresh,notify}){
     <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
       <div className="px-4 py-3 border-b flex flex-wrap items-center gap-3">
         <div>
-          <div className="font-semibold">{isBin?"\uD83D\uDDD1 Recycle bin":"Buried leads"} {rows?("("+rows.length+")"):""}</div>
-          <div className="text-xs text-slate-500">{isBin?"Deleted leads wait here. Restore sends a lead back to the same team member with a note; Delete forever removes it for good.":"Hidden from every list and count. Restore any time."}</div>
+          <div className="font-semibold">{isBin?"\uD83D\uDDD1 Recycle bin":"Archived leads"} {rows?("("+rows.length+")"):""}</div>
+          <div className="text-xs text-slate-500">{isBin?"Deleted leads wait here. Restore sends a lead back to the same team member with a note; Delete forever removes it for good.":"Hidden from every list, count, queue and reminder. Restore any time."}</div>
         </div>
         <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search..." className="ml-auto border rounded-lg px-3 py-1.5 text-sm"/>
         <button onClick={load} disabled={busy} className="px-3 py-1.5 rounded-lg bg-slate-100 text-sm">{"\u21BB Reload"}</button>
@@ -2277,7 +2341,7 @@ function ArchivePanel({kind,refresh,notify}){
           <button disabled={busy} onClick={()=>setSel({})} className="text-slate-500">Clear</button>
         </div>}
       {rows===null && <div className="px-4 py-6 text-sm text-slate-400">{"Loading\u2026"}</div>}
-      {rows!==null && shown.length===0 && <div className="px-4 py-6 text-sm text-slate-400">{isBin?"The recycle bin is empty.":"Nothing buried."}</div>}
+      {rows!==null && shown.length===0 && <div className="px-4 py-6 text-sm text-slate-400">{isBin?"The recycle bin is empty.":"Nothing archived yet."}</div>}
       {shown.length>0 &&
         <div className="overflow-x-auto no-scrollbar max-h-[70vh] overflow-y-auto">
           <table className="w-full text-sm">

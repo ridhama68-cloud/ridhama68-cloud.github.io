@@ -2229,7 +2229,7 @@ function ArchiveSection({leads,refresh,notify}){
     g.ids.push(l.ID);
     const st=String(l.Status||"New");
     if(st.toLowerCase()!=="new") g.worked++;
-    if(/booked|interested|website sent|landed/i.test(st)) g.active++;
+    if(/booked/i.test(st) || /^(interested|website sent|landed)$/i.test(st.trim())) g.active++;
   });
   const list=Object.keys(groups).map(function(k){ return groups[k]; }).sort(function(a,b){ return b.ids.length-a.ids.length; });
   const keep=list.filter(function(g){ return g.name.toLowerCase()===KEEP; });

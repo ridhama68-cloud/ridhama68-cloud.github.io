@@ -169,6 +169,19 @@ async function flushOutbox(){
     try{ if(_needFull){ _needFull=false; if(_drainedFull) _drainedFull(); } else if(_drainedLight) _drainedLight(); }catch(e){}
   }
 }
+// Move leads to the Recycle bin (or "buried"): they vanish from every list right away,
+// and can be restored from the Bin tab. Nothing is deleted.
+async function archiveLeadsApi(ids,state,note,refresh,notify){
+  if(_setLeadsRef){ const rm=new Set(ids); _setLeadsRef(function(cur){ return cur.filter(function(l){ return !rm.has(l.ID); }); }); }
+  const res=await apiPost({action:"archive", ids:ids, state:state, note:note||""});
+  if(res && res.ok){ notify((state==="buried"?"Buried ":"Moved to bin: ")+(res.archived!=null?res.archived:ids.length)); }
+  else {
+    const err=(res&&res.error)||"error";
+    notify("Failed: "+err+(/unknown action/i.test(err)?" (the backend needs the latest deploy)":""));
+    refresh();
+  }
+  return res;
+}
 function SyncBadge(){
   const [st,setSt]=useState({n:_outbox.length, flushing:_flushing, stuck:_outboxStuck});
   useEffect(function(){ _outboxSubs.push(setSt); return function(){ const i=_outboxSubs.indexOf(setSt); if(i>=0) _outboxSubs.splice(i,1); }; },[]);
@@ -1430,7 +1443,7 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
     );
   }
 
-  const tabs=[["dashboard","📊 Dashboard"],["leads","📇 Leads"],["pipeline","✅ Pipeline"],["team","👥 Team"]];
+  const tabs=[["dashboard","📊 Dashboard"],["leads","📇 Leads"],["pipeline","✅ Pipeline"],["team","👥 Team"],["bin","🗑 Bin"]];
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-4">
       <div className="flex gap-1 bg-slate-100 rounded-full p-1 w-max">
@@ -1462,6 +1475,8 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
         <TeamManager interns={interns} refresh={refresh} notify={notify}/>
         <DeviceAccess devices={devices} refresh={refresh} notify={notify}/>
       </React.Fragment>}
+
+      {section==="bin" && <ArchivePanel kind="bin" refresh={refresh} notify={notify}/>}
 
       {section==="leads" && <React.Fragment>
       <div className="bg-white rounded-2xl border border-slate-200 p-3 flex flex-wrap items-center gap-2">
@@ -2050,16 +2065,11 @@ function AdminLeadTable({leads,internNames,refresh,notify}){
   function toggleAll(){ if(allOn){ setSel({}); } else { const o={}; ids.forEach(function(id){ o[id]=true; }); setSel(o); } }
   async function removeIds(list,label){
     if(!list.length) return;
-    if(!confirm("Delete "+label+" permanently? This cannot be undone.")) return;
-    if(list.length>=10){ const t=prompt("Type DELETE to confirm deleting "+list.length+" leads"); if(t!=="DELETE"){ notify("Cancelled"); return; } }
+    if(!confirm("Move "+label+" to the Recycle bin? You can restore them any time from the Bin tab.")) return;
     setDelBusy(true);
-    let res=await apiPost({action:"deleteMany", ids:list});
-    if(!(res&&res.ok) && /unknown action/i.test((res&&res.error)||"")){
-      let done=0; for(const id of list){ const r=await apiPost({action:"delete", id:id}); if(r&&r.ok) done++; }
-      res={ok:true,deleted:done};
-    }
+    const res=await archiveLeadsApi(list,"bin","Deleted from Leads",refresh,notify);
     setDelBusy(false);
-    if(res&&res.ok){ notify("Deleted "+(res.deleted!=null?res.deleted:list.length)); setSel({}); refresh(); } else notify("Failed: "+((res&&res.error)||"error"));
+    if(res&&res.ok) setSel({});
   }
   async function del(lead){ await removeIds([lead.ID], '"'+(lead.Clinic||lead.Name||"this lead")+'"'); }
   return (
@@ -2206,6 +2216,97 @@ function PriorityRating({lead,refresh,notify,label}){
     </div>
   );
 }
+/* ================== RECYCLE BIN / BURIED ================== */
+function ArchivePanel({kind,refresh,notify}){
+  const [rows,setRows]=useState(null);
+  const [sel,setSel]=useState({});
+  const [q,setQ]=useState("");
+  const [busy,setBusy]=useState(false);
+  const isBin=kind==="bin";
+  async function load(){
+    const res=await apiPost({action:"listArchived"});
+    if(res&&res.ok){ setRows((res.leads||[]).filter(function(l){ return l["Archive State"]===kind; })); setSel({}); }
+    else { setRows([]); const e=(res&&res.error)||"error"; notify("Could not load: "+e+(/unknown action/i.test(e)?" (the backend needs the latest deploy)":"")); }
+  }
+  useEffect(function(){ load(); },[kind]);
+  const needle=q.trim().toLowerCase();
+  const shown=(rows||[]).filter(function(l){
+    if(!needle) return true;
+    return [l.Clinic,l.Name,l.Phone,l.City,l.Folder,l["Assigned To"],l.Status].join(" ").toLowerCase().indexOf(needle)>=0;
+  });
+  const ids=shown.map(function(l){ return l.ID; }).filter(Boolean);
+  const selIds=ids.filter(function(id){ return sel[id]; });
+  const allOn=ids.length>0 && selIds.length===ids.length;
+  function toggle(id){ setSel(function(s){ return Object.assign({},s,{[id]:!s[id]}); }); }
+  function toggleAll(){ if(allOn){ setSel({}); } else { const o={}; ids.forEach(function(id){ o[id]=true; }); setSel(o); } }
+  async function restore(list){
+    if(!list.length) return;
+    const note=prompt("Optional note for the team (added to each lead's notes):","");
+    if(note===null) return;
+    setBusy(true);
+    const res=await apiPost({action:"restore", ids:list, note:note.trim()});
+    setBusy(false);
+    if(res&&res.ok){ notify("Restored "+(res.restored!=null?res.restored:list.length)+" \u2014 back with their owners"); await load(); refresh(); }
+    else notify("Failed: "+((res&&res.error)||"error"));
+  }
+  async function purge(list){
+    if(!list.length) return;
+    if(!confirm("Delete "+list.length+" lead"+(list.length>1?"s":"")+" FOREVER? This cannot be undone.")) return;
+    if(list.length>=5){ const t=prompt("Type DELETE to confirm deleting "+list.length+" leads forever"); if(t!=="DELETE"){ notify("Cancelled"); return; } }
+    setBusy(true);
+    const res=await apiPost({action:"deleteMany", ids:list});
+    setBusy(false);
+    if(res&&res.ok){ notify("Deleted forever: "+(res.deleted!=null?res.deleted:list.length)); await load(); }
+    else notify("Failed: "+((res&&res.error)||"error"));
+  }
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+      <div className="px-4 py-3 border-b flex flex-wrap items-center gap-3">
+        <div>
+          <div className="font-semibold">{isBin?"\uD83D\uDDD1 Recycle bin":"Buried leads"} {rows?("("+rows.length+")"):""}</div>
+          <div className="text-xs text-slate-500">{isBin?"Deleted leads wait here. Restore sends a lead back to the same team member with a note; Delete forever removes it for good.":"Hidden from every list and count. Restore any time."}</div>
+        </div>
+        <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search..." className="ml-auto border rounded-lg px-3 py-1.5 text-sm"/>
+        <button onClick={load} disabled={busy} className="px-3 py-1.5 rounded-lg bg-slate-100 text-sm">{"\u21BB Reload"}</button>
+      </div>
+      {selIds.length>0 &&
+        <div className="px-4 py-2 bg-indigo-50 border-b flex items-center gap-3 text-sm flex-wrap">
+          <b>{selIds.length} selected</b>
+          <button disabled={busy} onClick={()=>restore(selIds)} className="px-3 py-1 rounded-lg bg-emerald-600 text-white disabled:opacity-50">{busy?"Working\u2026":"Restore selected"}</button>
+          <button disabled={busy} onClick={()=>purge(selIds)} className="px-3 py-1 rounded-lg bg-red-600 text-white disabled:opacity-50">Delete forever</button>
+          <button disabled={busy} onClick={()=>setSel({})} className="text-slate-500">Clear</button>
+        </div>}
+      {rows===null && <div className="px-4 py-6 text-sm text-slate-400">{"Loading\u2026"}</div>}
+      {rows!==null && shown.length===0 && <div className="px-4 py-6 text-sm text-slate-400">{isBin?"The recycle bin is empty.":"Nothing buried."}</div>}
+      {shown.length>0 &&
+        <div className="overflow-x-auto no-scrollbar max-h-[70vh] overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-slate-500 text-left sticky top-0"><tr>
+              <th className="px-3 py-2"><input type="checkbox" checked={allOn} onChange={toggleAll}/></th>
+              <th className="px-3 py-2">Clinic / Name</th><th className="px-3 py-2">Niche</th><th className="px-3 py-2">City</th>
+              <th className="px-3 py-2">Was with</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Moved on</th><th className="px-3 py-2"></th></tr></thead>
+            <tbody>
+              {shown.map(function(l,i){ return (
+                <tr key={l.ID||i} className={"border-t border-slate-100 "+(sel[l.ID]?"bg-indigo-50":"")}>
+                  <td className="px-3 py-2"><input type="checkbox" checked={!!sel[l.ID]} onChange={()=>toggle(l.ID)}/></td>
+                  <td className="px-3 py-2 font-medium">{l.Clinic||l.Name}{l.Clinic&&l.Name?<div className="text-xs text-slate-400">{l.Name}</div>:null}{l["Archive Note"]?<div className="text-[11px] text-slate-400">{l["Archive Note"]}</div>:null}</td>
+                  <td className="px-3 py-2">{l.Folder||"\u2014"}</td>
+                  <td className="px-3 py-2">{l.City}</td>
+                  <td className="px-3 py-2">{l["Assigned To"]||"\u2014"}</td>
+                  <td className="px-3 py-2"><StatusBadge status={l.Status}/></td>
+                  <td className="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">{l["Archived At"]}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <button disabled={busy} onClick={()=>restore([l.ID])} className="text-emerald-600 text-xs border border-emerald-200 rounded px-1.5 py-0.5 mr-1 disabled:opacity-40">Restore</button>
+                    <button disabled={busy} onClick={()=>purge([l.ID])} className="text-red-500 text-xs border border-red-200 rounded px-1.5 py-0.5 disabled:opacity-40">Delete forever</button>
+                  </td>
+                </tr>); })}
+            </tbody>
+          </table>
+        </div>}
+    </div>
+  );
+}
+
 /* ================== TEAM MANAGEMENT ================== */
 function TeamManager({interns,refresh,notify}){
   const [open,setOpen]=useState(interns.length===0);
@@ -2430,16 +2531,11 @@ function InternDetail({name,leads,internNames,stats,refresh,notify,onClose}){
   function toggleAll(){ if(allOn){ setSel({}); } else { const o={}; ids.forEach(function(id){ o[id]=true; }); setSel(o); } }
   async function removeIds(list,label){
     if(!list.length) return;
-    if(!confirm("Delete "+label+" permanently? This cannot be undone.")) return;
-    if(list.length>=10){ const t=prompt("Type DELETE to confirm deleting "+list.length+" leads"); if(t!=="DELETE"){ notify("Cancelled"); return; } }
+    if(!confirm("Move "+label+" to the Recycle bin? You can restore them any time from the Bin tab.")) return;
     setBusy(true);
-    let res=await apiPost({action:"deleteMany", ids:list});
-    if(!(res&&res.ok) && /unknown action/i.test((res&&res.error)||"")){
-      let done=0; for(const id of list){ const r=await apiPost({action:"delete", id:id}); if(r&&r.ok) done++; }
-      res={ok:true,deleted:done};
-    }
+    const res=await archiveLeadsApi(list,"bin","Deleted from "+name+"'s leads",refresh,notify);
     setBusy(false);
-    if(res&&res.ok){ notify("Deleted "+(res.deleted!=null?res.deleted:list.length)); setSel({}); refresh(); } else notify("Failed: "+((res&&res.error)||"error"));
+    if(res&&res.ok) setSel({});
   }
   async function del(l){ await removeIds([l.ID], '"'+(l.Clinic||l.Name||"this lead")+'"'); }
   const stat=(label,v)=>(<div className="text-center px-2"><div className="text-lg font-bold">{v||0}</div><div className="text-[10px] uppercase text-slate-400">{label}</div></div>);

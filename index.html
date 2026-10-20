@@ -707,7 +707,7 @@ function ScriptPanel({user}){
       if(r && r.ok && typeof r.text==="string"){
         const local=readLocalScript();
         // An unsaved draft on this device that is newer than the cloud copy is kept.
-        if(local && local.dirty && local.text!==r.text && (local.at||0)>(r.at||0)){ setSaved(r.text); setText(local.text); }
+        if(local && local.text && local.text!==r.text && (local.dirty||!r.text) && (local.at||0)>(r.at||0)){ setSaved(r.text); setText(local.text); }
         else { setText(r.text); setSaved(r.text); }
         setMeta({by:r.by, at:r.at}); setSt("ready");
       } else { const local=readLocalScript(); setSaved(local&&!local.dirty?local.text:null); setSt("local"); }

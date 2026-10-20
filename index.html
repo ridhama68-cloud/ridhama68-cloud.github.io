@@ -43,6 +43,24 @@
   .hero-rays { left: 50%; top: 50%; width: 170vmax; height: 170vmax; transform: translate(-50%,-50%); background: repeating-conic-gradient(from 0deg, rgba(251,191,36,.22) 0deg 9deg, transparent 9deg 18deg); -webkit-mask-image: radial-gradient(circle, #000 0%, transparent 58%); mask-image: radial-gradient(circle, #000 0%, transparent 58%); animation: rv-spin 22s linear infinite; }
   .hero-title { background: linear-gradient(90deg,#fde68a,#f59e0b,#fff7ed,#f59e0b,#fde68a); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: rv-gold 2.4s linear infinite; filter: drop-shadow(0 6px 24px rgba(245,158,11,.45)); }
   .combo-bar { transform-origin: left; animation: rv-drain linear forwards; }
+  /* ---- visual refresh ---- */
+  body { background: #f5f6fb; }
+  body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background: radial-gradient(1100px 600px at -10% -10%, rgba(99,102,241,.16), transparent 60%),
+                radial-gradient(900px 520px at 110% -5%, rgba(217,70,239,.13), transparent 60%),
+                radial-gradient(900px 600px at 50% 115%, rgba(16,185,129,.09), transparent 60%); }
+  .bg-white.rounded-2xl.border, .bg-white.rounded-xl.border, .bg-white.rounded-3xl.border { border-color: rgba(203,213,225,.65) !important; box-shadow: 0 1px 2px rgba(15,23,42,.04), 0 14px 34px -20px rgba(79,70,229,.28); }
+  .bg-indigo-600 { background-image: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); }
+  .bg-green-600 { background-image: linear-gradient(135deg, #16a34a 0%, #10b981 100%); }
+  .bg-emerald-500 { background-image: linear-gradient(135deg, #10b981 0%, #14b8a6 100%); }
+  .bg-emerald-700 { background-image: linear-gradient(135deg, #047857 0%, #0f766e 100%); }
+  .bg-cyan-600 { background-image: linear-gradient(135deg, #0891b2 0%, #3b82f6 100%); }
+  .bg-slate-600 { background-image: linear-gradient(135deg, #475569 0%, #334155 100%); }
+  a.bg-green-600, a.bg-emerald-500, a.bg-slate-600, button.bg-emerald-700, button.bg-cyan-600 { box-shadow: 0 8px 18px -10px rgba(15,23,42,.45); }
+  a.bg-green-600:hover, a.bg-emerald-500:hover, a.bg-slate-600:hover, button.bg-emerald-700:hover, button.bg-cyan-600:hover { filter: brightness(1.06); transform: translateY(-1px); }
+  .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 999px; margin-right: 5px; vertical-align: 1px; }
+  @keyframes rv-pulse-ring { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,.45); } 100% { box-shadow: 0 0 0 26px rgba(34,197,94,0); } }
+  .start-btn { animation: rv-pulse-ring 1.8s ease-out infinite; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
   }
@@ -50,7 +68,7 @@
   .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 </style>
 </head>
-<body class="bg-slate-50 text-slate-800">
+<body class="text-slate-800">
 <div id="root"></div>
 
 <script id="app-code" type="text/plain">
@@ -259,10 +277,10 @@ const BADGES = [
   {id:"streak7", icon:"⚡", name:"Unstoppable",   desc:"7-day goal streak",                      test:function(g){ return g.maxStreak>=7; }},
   {id:"pts1000", icon:"💎", name:"Thousand Club", desc:"Earn 1,000 points",                      test:function(g){ return g.points>=1000; }}
 ];
-const G_KEYS = ["dials","convos","web","meet","showed","landed","points"];
+const G_KEYS = ["dials","convos","web","meet","showed","landed","noshow","points"];
 
 function gIso(d){ return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }
-function gZero(){ return {dials:0,convos:0,web:0,meet:0,showed:0,landed:0,points:0}; }
+function gZero(){ return {dials:0,convos:0,web:0,meet:0,showed:0,landed:0,noshow:0,points:0}; }
 function gAdd(a,b){ const o={}; G_KEYS.forEach(function(k){ o[k]=(a[k]||0)+(b[k]||0); }); return o; }
 function gRec(dayObj,name){
   if(!dayObj || !name) return null;
@@ -277,7 +295,7 @@ function gRecStats(rec){
   const convos=Math.max(0, dials - n("Not Answering"));
   const web=n("Website Sent"), meet=n("Meeting Booked"), landed=n("Landed");
   const points=dials*GAME_PTS.dial + convos*GAME_PTS.convo + web*GAME_PTS.web + meet*GAME_PTS.meet + showed*GAME_PTS.showed + landed*GAME_PTS.landed;
-  return {dials:dials,convos:convos,web:web,meet:meet,showed:showed,landed:landed,points:points};
+  return {dials:dials,convos:convos,web:web,meet:meet,showed:showed,landed:landed,noshow:n("No Show"),points:points};
 }
 function levelFor(points){
   let cur=LEVELS[0];
@@ -294,6 +312,7 @@ function personGame(daily,name){
   const dialsBy={};
   days.forEach(function(d){
     const s=gRecStats(gRec(daily[d],name));
+    const mb=missionResult(d,name,s).bonus; if(mb) s.points+=mb;
     dialsBy[d]=s.dials;
     total=gAdd(total,s);
     G_KEYS.forEach(function(k){ if(s[k]>best[k]) best[k]=s[k]; });
@@ -593,6 +612,12 @@ function teamHypeCheck(){
       shown++;
       const landed=dl>0;
       fx({type:"pop", text:(landed?"🏆 ":"🎉 ")+n+(landed?" just landed a client!":" just booked a meeting!"), tone:"bg-gradient-to-r from-amber-500 to-orange-500"});
+      if(IS_TV){
+        fx({type:"hero", icon:landed?"🏆":"👑", kicker:landed?"Client landed":"Meeting booked", title:n, sub:landed?"is an absolute legend":"is the greatest"});
+        confetti(landed?2.4:1.6); sfx(landed?"landed":"meeting");
+        announce((landed?pickOne(HYPE_LAND):HYPE_MEET[0]).replace("{n}",n),{delay:900});
+        return;
+      }
       confetti(0.5);
       sfx("team");
       announce(n+(landed?" just landed a client!":" just booked a meeting!"),{delay:500});
@@ -850,6 +875,7 @@ function GameHUD({user}){
           {combo>=2 && <span className="relative overflow-hidden px-3 py-1.5 rounded-full bg-fuchsia-500 font-bold shadow">⚡ Combo x{combo}<span key={_combo.at} className="combo-bar absolute left-0 bottom-0 h-0.5 w-full bg-white/90" style={{animationDuration:Math.max(0,_combo.at+COMBO_MS-Date.now())+"ms"}}/></span>}
           <span className="ml-auto opacity-85">{left>0 ? (left+" more dial"+(left>1?"s":"")+" to today's goal") : "Goal hit! Every call now is bonus XP ✨"}</span>
         </div>
+        <MissionStrip user={user} s={g.today}/>
       </div>
       {panel==="board" && <Leaderboard me={user}/>}
       {panel==="badges" && <BadgeShelf g={g}/>}
@@ -871,7 +897,7 @@ function Leaderboard({me,title}){
   return (
     <div className="bg-white rounded-2xl border border-slate-200 p-4">
       <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
-        <div className="font-semibold flex items-center gap-2">{title || "🏆 Leaderboard"}{title && <SoundToggle/>}</div>
+        <div className="font-semibold flex items-center gap-2">{title || "🏆 Leaderboard"}{title && <SoundToggle/>}{title && <a href="?tv=1" target="_blank" rel="noopener" title="Full-screen live arena for a TV or second screen" className="px-2 py-0.5 rounded-full bg-slate-900 text-white text-xs font-medium">📺 TV mode</a>}</div>
         <div className="flex gap-1 bg-slate-100 rounded-full p-1 text-xs">
           {[["today","Today"],["week","7 days"],["month","This month"]].map(function(r){ return <button key={r[0]} onClick={()=>setRange(r[0])} className={"px-3 py-1 rounded-full "+(range===r[0]?"bg-white shadow font-medium":"text-slate-600")}>{r[1]}</button>; })}
         </div>
@@ -892,14 +918,15 @@ function Leaderboard({me,title}){
                   {r.streak>0 && <span className="text-[11px] text-orange-500 font-semibold">🔥{r.streak}</span>}
                 </div>
                 <div className="mt-1 h-1.5 rounded-full bg-slate-100 overflow-hidden"><div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-fuchsia-500 game-bar" style={{width:Math.round(r.s.points/top*100)+"%"}}/></div>
-                <div className="text-[11px] text-slate-500 mt-1 tabular-nums">📞 {r.s.dials} · 💬 {r.s.convos} · 🌐 {r.s.web} · 📅 {r.s.meet}{r.s.landed?(" · 🏆 "+r.s.landed):""}</div>
+                <div className="text-[11px] text-slate-500 mt-1 tabular-nums">📞 {r.s.dials} · 💬 {r.s.convos} · 🌐 {r.s.web} · 📅 {r.s.meet}{r.s.landed?(" · 🏆 "+r.s.landed):""}{(r.s.showed+r.s.noshow)>0?(" · 🤝 "+Math.round(r.s.showed/(r.s.showed+r.s.noshow)*100)+"% show-up"):""}</div>
               </div>
               <div className="text-right"><div className="font-extrabold text-indigo-700 tabular-nums">{r.s.points}</div><div className="text-[10px] text-slate-400">pts</div></div>
             </div>
           );
         })}
       </div>
-      <div className="text-[11px] text-slate-400 mt-3">Points: dial 1 · conversation +3 · website sent +5 · meeting booked +15 · show-up +20 · landed +50 · daily goal {GAME_GOAL} dials</div>
+      <WeeklyAwards/>
+      <div className="text-[11px] text-slate-400 mt-3">Points: dial 1 · conversation +3 · website sent +5 · meeting booked +15 · show-up +20 · landed +50 · missions +{MISSION_BONUS} each (+{MISSION_SWEEP} for all 3) · daily goal {GAME_GOAL} dials</div>
     </div>
   );
 }
@@ -920,6 +947,326 @@ function BadgeShelf({g}){
           );
         })}
       </div>
+    </div>
+  );
+}
+
+
+/* ============ DAILY MISSIONS (3 per person per day, picked from the date + name) ============ */
+// Missions only depend on the shared call log, so every screen computes the same bonus.
+const MISSION_START="2026-10-21";
+const MISSION_BONUS=10, MISSION_SWEEP=20;
+function _seed(str){ let h=2166136261; for(let i=0;i<str.length;i++){ h^=str.charCodeAt(i); h=Math.imul(h,16777619); } return h>>>0; }
+function missionsFor(day,name){
+  let h=_seed(day+"|"+String(name||"").toLowerCase());
+  const r=function(n){ h=Math.imul(h^(h>>>15),2246822507)>>>0; return h%n; };
+  const dialT=[25,30,35,40][r(4)], convoT=[6,8,10][r(3)];
+  const third = r(2)===0 ? {k:"web", n:[2,3,4][r(3)], icon:"🌐", label:"Send {n} websites"} : {k:"meet", n:1, icon:"📅", label:"Book a meeting"};
+  return [
+    {k:"dials", n:dialT, icon:"📞", label:"Make {n} dials"},
+    {k:"convos", n:convoT, icon:"💬", label:"Have {n} conversations"},
+    third
+  ].map(function(m,i){ return Object.assign({id:day+":"+i, text:m.label.replace("{n}",m.n)}, m); });
+}
+function missionResult(day,name,s){
+  if(day<MISSION_START) return {list:[], done:0, bonus:0};
+  const list=missionsFor(day,name).map(function(m){ const have=(s&&s[m.k])||0; return Object.assign({}, m, {have:have, done:have>=m.n}); });
+  const done=list.filter(function(m){ return m.done; }).length;
+  return {list:list, done:done, bonus: done*MISSION_BONUS + (done===list.length?MISSION_SWEEP:0)};
+}
+function MissionStrip({user,s}){
+  const res=missionResult(todayISO(),user,s);
+  // Celebrate each newly finished mission (remembered per person per day on this device).
+  useEffect(function(){
+    const k="reactivify.missions."+String(user).toLowerCase()+"."+todayISO();
+    let prev=null; try{ prev=Number(localStorage.getItem(k)); }catch(e){}
+    if(prev!==null && !isNaN(prev) && res.done>prev){
+      if(res.done===res.list.length){
+        sfx("goal"); confetti(1.4);
+        fx({type:"pop", text:"🧹 Clean sweep! All missions done  +"+(MISSION_BONUS+MISSION_SWEEP)+" pts", tone:"bg-gradient-to-r from-amber-500 to-orange-500"});
+        announce(user+" completed every mission today!",{delay:500});
+      } else {
+        sfx("badge");
+        fx({type:"pop", text:"🎯 Mission complete!  +"+MISSION_BONUS+" pts", tone:"bg-gradient-to-r from-emerald-500 to-teal-500"});
+      }
+    }
+    try{ localStorage.setItem(k, String(res.done)); }catch(e){}
+  },[res.done,user]);
+  if(!res.list.length) return null;
+  return (
+    <div className="relative mt-3">
+      <div className="flex items-center justify-between text-[11px] uppercase tracking-widest opacity-80 mb-1.5"><span>Daily missions</span><span>{res.done}/{res.list.length} · all 3 = +{MISSION_SWEEP} bonus</span></div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        {res.list.map(function(m){
+          const pct=Math.min(100, m.have/m.n*100);
+          return (
+            <div key={m.id} className={"rounded-2xl px-3 py-2 transition-colors "+(m.done?"bg-amber-300 text-amber-950 shadow":"bg-white/15")}>
+              <div className="flex items-center justify-between gap-2 text-xs font-semibold"><span className="truncate">{m.icon} {m.text}</span><span className="shrink-0 tabular-nums">{m.done?("✓ +"+MISSION_BONUS):(Math.min(m.have,m.n)+"/"+m.n)}</span></div>
+              <div className={"mt-1.5 h-1.5 rounded-full overflow-hidden "+(m.done?"bg-amber-900/15":"bg-white/20")}><div className={"h-full rounded-full game-bar "+(m.done?"bg-amber-700":"bg-white")} style={{width:pct+"%"}}/></div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ============ MEETING SOON (no-show prevention) ============ */
+function reminderMsg(l, who){
+  const at=leadDateTime(l["Meeting Date"], l["Meeting Time"]); if(!at) return "";
+  const name=String(l.Name||"").trim()||"there";
+  const today=at.toDateString()===new Date().toDateString();
+  return "Hi "+name+" 🙂 Quick reminder: we're meeting "+(today?"today":("on "+WA_DAYS[at.getDay()]))+" at "+waClock(at)+".\n\n"
+    +"📍 Google Meet: "+MEET_LINK+"\n\n"
+    +"Keep 3–4 of your project photos handy. See you there!\n"
+    +"— "+(who?(who+", "):"")+"Reactivify";
+}
+function MeetingSoon({leads,user,actor}){
+  const [,setTick]=useState(0);
+  useEffect(function(){ const id=setInterval(function(){ setTick(function(t){ return t+1; }); },30000); return function(){ clearInterval(id); }; },[]);
+  const now=Date.now();
+  const soon=(leads||[]).filter(function(l){ return /booked/i.test(l.Status||""); })
+    .map(function(l){ return {l:l, at:leadDateTime(l["Meeting Date"], l["Meeting Time"])}; })
+    .filter(function(x){ return x.at && x.at.getTime()-now<3*3600000 && now-x.at.getTime()<45*60000; })
+    .sort(function(a,b){ return a.at-b.at; });
+  if(!soon.length) return null;
+  return (
+    <div className="rounded-3xl p-4 text-white shadow-xl bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 space-y-2 relative overflow-hidden">
+      <div className="absolute -right-8 -top-10 w-36 h-36 rounded-full bg-white/15" style={{filter:"blur(20px)"}}/>
+      <div className="relative text-[11px] uppercase tracking-widest font-bold opacity-90">⏰ Meeting soon · send a reminder so they show up</div>
+      {soon.map(function(x){
+        const key="reactivify.reminded."+x.l.ID+"."+x.l["Meeting Date"]+"."+x.l["Meeting Time"];
+        let sent=false; try{ sent=!!localStorage.getItem(key); }catch(e){}
+        const ms=x.at.getTime()-now, who=actor||x.l["Assigned To"]||user;
+        return (
+          <div key={x.l.ID} className="relative flex items-center gap-2 flex-wrap bg-white/15 rounded-2xl px-3 py-2">
+            <div className="flex-1 min-w-[150px]">
+              <div className="font-bold">{x.l.Clinic||x.l.Name}</div>
+              <div className="text-xs opacity-90">{waClock(x.at)} · {ms>0?("in "+fmtCountdown(ms)):"happening now"}{x.l["Assigned To"]&&!actor&&user==="Team"?(" · "+x.l["Assigned To"]):""}</div>
+            </div>
+            {x.l.Phone && <a href={waLink(x.l.Phone, reminderMsg(x.l, who))} target="_blank" rel="noopener"
+              onClick={function(){ try{ localStorage.setItem(key,"1"); }catch(e){} setTimeout(function(){ setTick(function(t){ return t+1; }); },300); }}
+              className={"px-3 py-2 rounded-xl text-sm font-semibold shadow "+(sent?"bg-white/25 text-white":"bg-white text-emerald-700")}>{sent?"✓ Reminder sent":"📲 Send reminder"}</a>}
+            {x.l.Phone && <a href={"tel:"+digits(x.l.Phone)} className="px-3 py-2 rounded-xl text-sm font-semibold bg-white/20">📞</a>}
+            {ms<20*60000 && <a href={MEET_LINK} target="_blank" rel="noopener" className="px-3 py-2 rounded-xl text-sm font-semibold bg-slate-900 text-white shadow">🎥 Join Meet</a>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ============ REVENUE (amounts are saved as tagged lines in the lead's notes) ============ */
+// "[21 Oct 2026, 4:48 pm · Ridham] 💰 Landed ₹25,000"  /  "... 💸 Quoted ₹30,000"
+const MONEY_RE=/^\[([^\]·]*)[^\]]*\]\s*(💰 Landed|💸 Quoted) ₹([\d,]+)/;
+function moneyOf(l){
+  const out={quoted:0, landed:0, landedAt:null, quotedAt:null};
+  String(l.Notes||"").split("\n").forEach(function(line){
+    const m=line.match(MONEY_RE); if(!m) return;
+    const amt=Number(m[3].replace(/,/g,""))||0;
+    const when=new Date(String(m[1]).split(",")[0].trim()); const ok=!isNaN(when.getTime());
+    if(/Landed/.test(m[2])){ out.landed=amt; out.landedAt=ok?when:null; } else { out.quoted=amt; out.quotedAt=ok?when:null; }
+  });
+  return out;
+}
+function inr(n){ return "₹"+Math.round(n||0).toLocaleString("en-IN"); }
+function askAmount(label){
+  const v=window.prompt(label);
+  const n=Number(String(v||"").replace(/[^\d]/g,""));
+  return n>0 ? n : 0;
+}
+function noteWith(l, text, who){
+  const entry="["+nowStamp()+" · "+(who||"Team")+"] "+text;
+  const hist=String(l.Notes||"").trim();
+  return hist ? (hist+"\n"+entry) : entry;
+}
+function RevenueCard({leads,title}){
+  const now=new Date(), ym=now.getFullYear()+"-"+now.getMonth();
+  let month=0, all=0, deals=0, monthDeals=0, open=0, openN=0;
+  (leads||[]).forEach(function(l){
+    if(String(l.Notes||"").indexOf("₹")<0) return;
+    const m=moneyOf(l);
+    if(m.landed){ all+=m.landed; deals++; if(m.landedAt && (m.landedAt.getFullYear()+"-"+m.landedAt.getMonth())===ym){ month+=m.landed; monthDeals++; } }
+    else if(m.quoted && !/not interested|dumped/i.test(l.Status||"")){ open+=m.quoted; openN++; }
+  });
+  const tile=function(big,label,sub){ return <div className="bg-white/15 rounded-2xl px-4 py-3"><div className="text-2xl font-extrabold tabular-nums">{big}</div><div className="text-[11px] opacity-90">{label}</div>{sub && <div className="text-[10px] opacity-75 mt-0.5">{sub}</div>}</div>; };
+  return (
+    <div className="rounded-3xl p-4 text-white shadow-xl bg-gradient-to-br from-emerald-600 via-emerald-500 to-teal-500 relative overflow-hidden">
+      <div className="absolute -left-10 -bottom-12 w-44 h-44 rounded-full bg-white/10" style={{filter:"blur(24px)"}}/>
+      <div className="relative flex items-center justify-between mb-2"><div className="font-bold">{title||"💰 Revenue"}</div><div className="text-[11px] opacity-80">Add amounts with 💸 Quote and when closing as Landed</div></div>
+      <div className="relative grid grid-cols-3 gap-2">
+        {tile(inr(month),"closed this month",monthDeals+" deal"+(monthDeals===1?"":"s"))}
+        {tile(inr(open),"open quotes",openN+" waiting")}
+        {tile(inr(all),"closed all-time",deals+" deal"+(deals===1?"":"s"))}
+      </div>
+    </div>
+  );
+}
+
+/* ============ QUICK ANSWERS (objections), stored inside the shared script ============ */
+const QA_MARK="=== QUICK ANSWERS ===";
+const DEFAULT_QA=[
+  {t:"Too expensive", a:"Totally fair. That's why it's half to start and half only once it's live, with no monthly fees ever. One project that comes from the website pays for it many times over. Can I show you a sample in 15 minutes so you can judge the value yourself?"},
+  {t:"Already have a website", a:"Great, so you already know it matters. Most designer sites look like a template, not a showroom. Ours stage your projects so clients trust you before they even call. Can I show you a side-by-side with yours? It takes 15 minutes."},
+  {t:"Clients come from Instagram / referrals", a:"That's how the best studios grow. The website is where those referrals check you out before calling. When they search your name, a showroom-style site closes them for you. Want to see how that looks for a studio like yours?"},
+  {t:"Send me details on WhatsApp", a:"Sure, sending it right now with samples and prices. Quick question so I send the right one: mostly residential or commercial projects? And would Thursday or Friday work for a quick 15-minute look?"},
+  {t:"I'm busy right now", a:"No problem, I'll keep it short. What's a better time, later today or tomorrow, morning or evening? I'll call you back exactly then."},
+  {t:"Let me think about it", a:"Of course. What's the main thing you'd want to think over: the price, the timing, or whether it'll bring clients? And remember, it's live in 4 days or it's free, so there's no risk in trying."}
+];
+function splitScript(t){
+  t=String(t||"");
+  const i=t.indexOf(QA_MARK);
+  if(i<0) return {script:t, qa:null};
+  const qa=[];
+  t.slice(i+QA_MARK.length).split(/\n## /).forEach(function(blk){
+    blk=blk.replace(/^\s*(## )?/,"");
+    if(!blk.trim()) return;
+    const nl=blk.indexOf("\n");
+    const title=(nl<0?blk:blk.slice(0,nl)).trim(), ans=(nl<0?"":blk.slice(nl+1)).trim();
+    if(title) qa.push({t:title, a:ans});
+  });
+  return {script:t.slice(0,i).replace(/\s+$/,""), qa:qa};
+}
+function joinScript(script, qa){
+  if(!qa) return script;
+  return String(script||"").replace(/\s+$/,"")+"\n\n"+QA_MARK+"\n"+qa.map(function(o){ return "## "+String(o.t||"").replace(/\n/g," ").trim()+"\n"+String(o.a||"").trim(); }).join("\n\n");
+}
+function QuickAnswers({qa,setQa,size}){
+  const [pick,setPick]=useState(0);
+  const [edit,setEdit]=useState(false);
+  const cur=qa[Math.min(pick,qa.length-1)];
+  function upd(i,patch){ setQa(qa.map(function(o,j){ return j===i?Object.assign({},o,patch):o; })); }
+  if(edit) return (
+    <div className="flex-1 min-h-[50vh] lg:min-h-0 overflow-y-auto space-y-3 pr-1">
+      {qa.map(function(o,i){ return (
+        <div key={i} className="border border-slate-200 rounded-xl p-2 space-y-1.5 bg-slate-50/60">
+          <div className="flex gap-2"><input value={o.t} onChange={e=>upd(i,{t:e.target.value})} placeholder="Objection (e.g. Too expensive)" className="flex-1 border rounded-lg px-2 py-1 text-sm font-semibold"/>
+            <button onClick={()=>setQa(qa.filter(function(_,j){ return j!==i; }))} className="px-2 text-red-500 text-sm" title="Remove">✕</button></div>
+          <textarea value={o.a} onChange={e=>upd(i,{a:e.target.value})} rows={3} placeholder="What to say" className="w-full border rounded-lg px-2 py-1 text-sm"/>
+        </div>
+      ); })}
+      <div className="flex gap-2">
+        <button onClick={()=>setQa(qa.concat([{t:"",a:""}]))} className="px-3 py-1.5 rounded-lg bg-slate-100 text-sm">＋ Add answer</button>
+        <button onClick={()=>setEdit(false)} className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm">Done editing</button>
+      </div>
+    </div>
+  );
+  return (
+    <div className="flex-1 min-h-[50vh] lg:min-h-0 flex flex-col gap-3">
+      <div className="flex flex-wrap gap-1.5">
+        {qa.map(function(o,i){ return <button key={i} onClick={()=>setPick(i)} className={"px-3 py-1.5 rounded-full text-xs font-medium border "+(i===pick?"bg-indigo-600 text-white border-transparent shadow":"bg-white border-slate-200 text-slate-700 hover:border-indigo-300")}>{o.t||"(untitled)"}</button>; })}
+      </div>
+      {cur
+        ? <div className="flex-1 rounded-2xl bg-gradient-to-br from-indigo-50 to-fuchsia-50 border border-indigo-100 p-4 overflow-y-auto">
+            <div className="text-[11px] uppercase tracking-widest text-indigo-500 font-bold mb-1">They say: “{cur.t}”</div>
+            <div className="text-slate-800 whitespace-pre-wrap" style={{fontSize:size+"px", lineHeight:1.6}}>{cur.a||"(no answer yet, tap Edit)"}</div>
+          </div>
+        : <div className="text-sm text-slate-400">No quick answers yet.</div>}
+      <div className="flex gap-2">
+        {cur && <button onClick={()=>{ try{ navigator.clipboard.writeText(cur.a); }catch(e){} }} className="px-3 py-1.5 rounded-lg bg-slate-100 text-xs">📋 Copy</button>}
+        <button onClick={()=>setEdit(true)} className="px-3 py-1.5 rounded-lg bg-slate-100 text-xs">✎ Edit answers</button>
+      </div>
+    </div>
+  );
+}
+
+/* ============ WEEKLY AWARDS (last 7 days, from the shared call log) ============ */
+function weeklyAwards(daily){
+  if(!daily) return [];
+  const rows=teamBoard(daily,"week").filter(function(r){ return r.s.dials>0; });
+  if(!rows.length) return [];
+  const top=function(f){ return rows.slice().sort(function(a,b){ return f(b)-f(a); })[0]; };
+  // previous 7 days, for "most improved"
+  const prevPts={};
+  for(let i=7;i<14;i++){ const d=new Date(); d.setDate(d.getDate()-i); const iso=gIso(d);
+    rows.forEach(function(r){ prevPts[r.name]=(prevPts[r.name]||0)+gRecStats(gRec((daily||{})[iso],r.name)).points; }); }
+  const out=[];
+  const closer=top(function(r){ return r.s.meet*100000+r.s.points; });
+  if(closer.s.meet>0) out.push({icon:"👑", title:"Closer of the week", name:closer.name, stat:closer.s.meet+" meeting"+(closer.s.meet>1?"s":"")});
+  const dialer=top(function(r){ return r.s.dials; });
+  out.push({icon:"📞", title:"Dial machine", name:dialer.name, stat:dialer.s.dials+" dials"});
+  const talker=top(function(r){ return r.s.convos; });
+  if(talker.s.convos>0) out.push({icon:"💬", title:"Smooth talker", name:talker.name, stat:talker.s.convos+" conversations"});
+  const streak=top(function(r){ return r.streak; });
+  if(streak.streak>0) out.push({icon:"🔥", title:"Longest streak", name:streak.name, stat:streak.streak+" day"+(streak.streak>1?"s":"")});
+  const imp=top(function(r){ return r.s.points-(prevPts[r.name]||0); });
+  const gain=imp.s.points-(prevPts[imp.name]||0);
+  if(gain>0 && rows.length>1) out.push({icon:"📈", title:"Most improved", name:imp.name, stat:"+"+gain+" pts vs last week"});
+  return out;
+}
+function WeeklyAwards({dark}){
+  const daily=useGame();
+  const list=useMemo(function(){ return weeklyAwards(daily); },[daily]);
+  if(!list.length) return null;
+  return (
+    <div className={dark?"":"mt-4"}>
+      <div className={"text-[11px] uppercase tracking-widest font-bold mb-2 "+(dark?"text-amber-200":"text-slate-400")}>🏅 Awards · last 7 days</div>
+      <div className={"grid gap-2 "+(dark?"grid-cols-1":"grid-cols-2 sm:grid-cols-3")}>
+        {list.map(function(a){ return (
+          <div key={a.title} className={"rounded-2xl px-3 py-2.5 flex items-center gap-3 "+(dark?"bg-white/10":"bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-100")}>
+            <div className="text-2xl">{a.icon}</div>
+            <div className="min-w-0">
+              <div className={"text-[10px] uppercase tracking-wider font-bold "+(dark?"text-amber-200":"text-amber-700")}>{a.title}</div>
+              <div className={"font-bold truncate "+(dark?"text-white text-lg":"text-slate-900")}>{a.name}</div>
+              <div className={"text-[11px] "+(dark?"text-white/70":"text-slate-500")}>{a.stat}</div>
+            </div>
+          </div>
+        ); })}
+      </div>
+    </div>
+  );
+}
+
+/* ============ TV MODE (?tv=1): full-screen live arena for a second screen ============ */
+const IS_TV=/[?&]tv=1(&|$)/.test(location.search);
+function TVMode(){
+  const daily=useGame();
+  const [armed,setArmed]=useState(false);
+  const [clock,setClock]=useState(new Date());
+  useEffect(function(){ const a=setInterval(function(){ gameLoad(true); },20000); const b=setInterval(function(){ setClock(new Date()); },1000); return function(){ clearInterval(a); clearInterval(b); }; },[]);
+  const rows=useMemo(function(){ return daily ? teamBoard(daily,"today").filter(function(r){ return r.s.dials>0 || r.s.points>0; }) : []; },[daily]);
+  const totals=rows.reduce(function(a,r){ return gAdd(a,r.s); }, gZero());
+  const top=rows.length ? Math.max(1,rows[0].s.points) : 1;
+  const medals=["🥇","🥈","🥉"];
+  function start(){ setArmed(true); audio(); try{ document.documentElement.requestFullscreen && document.documentElement.requestFullscreen(); }catch(e){} }
+  const tile=function(big,label,icon){ return <div className="rounded-3xl bg-white/10 px-5 py-4"><div className="text-sm text-white/70">{icon} {label}</div><div className="text-5xl font-black tabular-nums mt-1">{big}</div></div>; };
+  return (
+    <div className="min-h-screen text-white relative overflow-hidden" style={{background:"radial-gradient(1200px 700px at 0% 0%, #4338ca 0%, transparent 60%), radial-gradient(1000px 700px at 100% 100%, #a21caf 0%, transparent 60%), #0b0b1e"}}>
+      <GameFX/>
+      <div className="relative max-w-[1600px] mx-auto p-8 space-y-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-400 via-violet-500 to-fuchsia-500 flex items-center justify-center text-3xl font-black shadow-2xl">R</div>
+            <div><div className="text-4xl font-black tracking-tight">Reactivify Arena</div><div className="text-white/60">Live · today's leaderboard</div></div>
+          </div>
+          <div className="text-right"><div className="text-5xl font-black tabular-nums">{clock.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"})}</div><div className="text-white/60">{clock.toLocaleDateString([], {weekday:"long", day:"numeric", month:"long"})}</div></div>
+        </div>
+        <div className="grid grid-cols-4 gap-4">
+          {tile(totals.dials,"Dials","📞")}{tile(totals.convos,"Conversations","💬")}{tile(totals.web,"Websites sent","🌐")}{tile(totals.meet,"Meetings booked","📅")}
+        </div>
+        <div className="grid grid-cols-3 gap-6">
+          <div className="col-span-2 rounded-3xl bg-white/5 p-6 space-y-3">
+            {rows.length===0 && <div className="text-2xl text-white/60 py-16 text-center">Waiting for the first call of the day… ☕</div>}
+            {rows.map(function(r,i){ return (
+              <div key={r.name} className={"game-row flex items-center gap-5 rounded-2xl px-5 py-4 "+(i===0?"bg-gradient-to-r from-amber-400/25 to-transparent":"bg-white/5")} style={{animationDelay:(i*80)+"ms"}}>
+                <div className="w-12 text-center text-4xl">{medals[i]||<span className="text-2xl text-white/50 font-bold">{i+1}</span>}</div>
+                <Avatar name={r.name} size={64}/>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-3"><span className="text-3xl font-black truncate">{r.name}</span><span className="text-sm bg-white/10 rounded-full px-3 py-1">{r.level.icon} {r.level.name}</span>{r.streak>0 && <span className="text-orange-300 font-bold">🔥{r.streak}</span>}</div>
+                  <div className="mt-2 h-3 rounded-full bg-white/10 overflow-hidden"><div className="h-full rounded-full bg-gradient-to-r from-indigo-400 via-violet-400 to-fuchsia-400 game-bar" style={{width:Math.max(3,r.s.points/top*100)+"%"}}/></div>
+                  <div className="text-white/70 mt-1.5">📞 {r.s.dials} · 💬 {r.s.convos} · 🌐 {r.s.web} · 📅 {r.s.meet}</div>
+                </div>
+                <div className="text-right"><div className="text-5xl font-black tabular-nums">{r.s.points}</div><div className="text-white/60 text-sm">points</div></div>
+              </div>
+            ); })}
+          </div>
+          <div className="rounded-3xl bg-white/5 p-6"><WeeklyAwards dark={true}/></div>
+        </div>
+      </div>
+      {!armed &&
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center" style={{zIndex:90}}>
+          <button onClick={start} className="px-10 py-6 rounded-3xl bg-gradient-to-r from-indigo-500 to-fuchsia-500 text-2xl font-black shadow-2xl">▶ Start TV mode<div className="text-sm font-medium opacity-80 mt-1">full screen with sound and live alerts</div></button>
+        </div>}
     </div>
   );
 }
@@ -1045,6 +1392,9 @@ function ScriptPanel({user}){
       else setSt("error");
     }catch(e){ setSt("error"); }
   }
+  const [tab,setTab]=useState("script");
+  const parts=splitScript(text);
+  const qa=parts.qa||DEFAULT_QA;
   const when = meta&&meta.at ? new Date(meta.at).toLocaleString([], {day:"numeric",month:"short",hour:"numeric",minute:"2-digit"}) : "";
   const status = st==="loading" ? "Loading…"
     : st==="saving" ? "Saving…"
@@ -1055,18 +1405,23 @@ function ScriptPanel({user}){
   return (
     <div className="bg-white rounded-2xl border border-slate-200 p-4 flex flex-col lg:h-[calc(100vh-6rem)]">
       <div className="flex items-center justify-between gap-2 mb-2">
-        <div className="font-semibold">📜 Call script</div>
+        <div className="flex gap-1 bg-slate-100 rounded-full p-1 text-sm">
+          <button onClick={()=>setTab("script")} className={"px-3 py-1 rounded-full "+(tab==="script"?"bg-white shadow font-semibold text-indigo-700":"text-slate-600")}>📜 Script</button>
+          <button onClick={()=>setTab("qa")} className={"px-3 py-1 rounded-full "+(tab==="qa"?"bg-white shadow font-semibold text-indigo-700":"text-slate-600")}>💬 Quick answers <span className="text-slate-400">{qa.length}</span></button>
+        </div>
         <div className="flex items-center gap-1">
           <button onClick={()=>setSize(Math.max(12,size-1))} className="w-8 h-8 rounded-lg bg-slate-100 text-xs text-slate-600" title="Smaller text">A-</button>
           <button onClick={()=>setSize(Math.min(24,size+1))} className="w-8 h-8 rounded-lg bg-slate-100 text-sm text-slate-600" title="Bigger text">A+</button>
           <button onClick={save} disabled={!dirty||st==="saving"||st==="loading"} className="px-4 h-8 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-40">Save</button>
         </div>
       </div>
-      <textarea value={text} onChange={e=>setText(e.target.value)} disabled={st==="loading"}
+      {tab==="qa"
+        ? <QuickAnswers qa={qa} setQa={function(n){ setText(joinScript(parts.script, n)); }} size={size}/>
+        : <textarea value={parts.script} onChange={e=>setText(joinScript(e.target.value, parts.qa))} disabled={st==="loading"}
         onKeyDown={e=>{ if((e.ctrlKey||e.metaKey)&&(e.key==="s"||e.key==="S")){ e.preventDefault(); if(dirty) save(); } }}
         placeholder={"Write your full call script here.\n\nOpening…\nPitch…\nObjections…\nClose…"}
         style={{fontSize:size+"px", lineHeight:1.6}}
-        className="flex-1 min-h-[60vh] lg:min-h-0 w-full border border-slate-200 rounded-xl px-3 py-2 resize-y lg:resize-none text-slate-800"/>
+        className="flex-1 min-h-[60vh] lg:min-h-0 w-full border border-slate-200 rounded-xl px-3 py-2 resize-y lg:resize-none text-slate-800"/>}
       <div className={"text-[11px] mt-2 "+(st==="error"?"text-red-500":dirty?"text-amber-600":"text-slate-400")}>{status} · Ctrl+S saves · the whole team sees this script</div>
     </div>
   );
@@ -1566,10 +1921,11 @@ function WorkStatusBadge({session}){
 
 function Header({user,isAdmin,session,onSwitch,onRefresh,loading,notifPerm,onEnableNotif}){
   return (
-    <div className="sticky top-0 z-40 bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between">
-      <div className="flex items-center gap-2">
-        <span className="text-lg font-bold text-indigo-600">Reactivify</span>
-        <span className="text-xs bg-slate-100 px-2 py-0.5 rounded-full">{isAdmin?"Admin":"Intern"}: {user}</span>
+    <div className="sticky top-0 z-40 bg-white/80 backdrop-blur-md border-b border-white/70 shadow-[0_1px_0_rgba(15,23,42,.06)] px-4 py-2.5 flex items-center justify-between">
+      <div className="flex items-center gap-2.5">
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 text-white font-black flex items-center justify-center shadow-md">R</div>
+        <span className="text-lg font-extrabold bg-gradient-to-r from-indigo-600 to-fuchsia-600 bg-clip-text text-transparent hidden sm:inline">Reactivify</span>
+        <span className="text-xs bg-indigo-50 text-indigo-700 font-medium px-2.5 py-1 rounded-full flex items-center gap-1.5"><Avatar name={user} size={18}/>{isAdmin?"Admin":"Intern"}: {user}</span>
         {!isAdmin && <WorkStatusBadge session={session}/>}
       </div>
       <div className="flex items-center gap-2">
@@ -1588,10 +1944,11 @@ function StartShift({user,onStart,onCancel}){
   async function go(){ setBusy(true); await onStart(); /* App re-renders into the queue */ }
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6 text-center">
-      <div className="text-3xl font-bold text-indigo-600 mb-1">Reactivify</div>
-      <div className="text-slate-500 mb-8">Hi {user} 👋 — ready to start your shift?</div>
+      <Avatar name={user} size={72}/>
+      <div className="text-3xl font-extrabold tracking-tight mt-4 text-slate-900">Hi {user} 👋</div>
+      <div className="text-slate-500 mb-10">{["Every dial is a step to your next client.","Today's goal: "+GAME_GOAL+" dials. Let's crush it.","Someone out there needs your website. Go find them.","Smile while you dial, they can hear it."][new Date().getDate()%4]}</div>
       <button onClick={go} disabled={busy}
-        className="px-10 py-5 rounded-2xl bg-green-600 text-white text-xl font-bold shadow-sm disabled:opacity-40">
+        className="start-btn px-12 py-5 rounded-full bg-green-600 text-white text-xl font-bold shadow-xl disabled:opacity-40">
         {busy?"Starting…":"▶ Start dialing"}
       </button>
       <div className="text-xs text-slate-400 mt-6 max-w-xs">
@@ -1762,13 +2119,15 @@ function Login({interns,onPick,onNeedInterns,configMissing}){
   const list = ["Team", ...interns.map(i=>i.name)];
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6">
-      <div className="text-3xl font-bold text-indigo-600 mb-1">Reactivify</div>
-      <div className="text-slate-500 mb-8">Lead Console — pick your name</div>
-      <div className="grid grid-cols-2 gap-3 w-full max-w-sm">
-        {list.map(n=>(
-          <button key={n} onClick={()=>onPick(n)}
-            className={"py-4 rounded-2xl font-semibold shadow-sm border "+(n==="Team"?"bg-indigo-600 text-white border-indigo-600":"bg-white border-slate-200 hover:border-indigo-400")}>
-            {n}{n==="Team" && <div className="text-xs font-normal opacity-80">Admin</div>}
+      <div className="w-16 h-16 rounded-3xl bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 text-white text-3xl font-black flex items-center justify-center shadow-xl mb-4 game-bounce">R</div>
+      <div className="text-4xl font-extrabold tracking-tight bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 bg-clip-text text-transparent mb-1">Reactivify</div>
+      <div className="text-slate-500 mb-8">Lead Console · who's dialing today?</div>
+      <div className="grid grid-cols-2 gap-3 w-full max-w-md">
+        {list.map((n,i)=>(
+          <button key={n} onClick={()=>onPick(n)} style={{animationDelay:(i*45)+"ms"}}
+            className={"game-row flex items-center gap-3 px-4 py-3.5 rounded-2xl font-semibold text-left border transition-all hover:-translate-y-0.5 hover:shadow-lg "+(n==="Team"?"bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600 text-white border-transparent shadow-lg":"bg-white/90 border-slate-200 hover:border-indigo-300 shadow-sm")}>
+            {n==="Team" ? <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-xl shrink-0">👑</div> : <Avatar name={n} size={40}/>}
+            <div className="min-w-0"><div className="truncate">{n}</div><div className={"text-xs font-normal "+(n==="Team"?"opacity-80":"text-slate-400")}>{n==="Team"?"Admin":"Tap to start"}</div></div>
           </button>
         ))}
       </div>
@@ -2058,12 +2417,24 @@ function CloseItem({item,refresh,notify}){
   const [resched,setResched]=useState(false);
   const [dt,setDt]=useState({date:todayISO(),time:"11:00"});
   const overdueHrs=(Date.now()-item.when.getTime())/3600000;
+  function celebrate(outcome){
+    // The server already has it; show the same pops/sounds a call would, then re-sync the scores.
+    const op=newOpId(); gameBump(l["Assigned To"]||"", outcome, op); gameConfirm(op); gameLoad(true);
+  }
   async function closeAs(status){
     if(!status) return;
+    const patch={ID:l.ID, Status:status};
+    if(status==="Landed"){ const amt=askAmount("🏆 Client landed! Deal value in ₹ (optional):"); if(amt) patch.Notes=noteWith(l,"💰 Landed "+inr(amt),l["Assigned To"]); }
     setBusy(true);
     // dial:false — closing a meeting isn't a fresh dial, so it shouldn't inflate the dial count.
-    const res=await apiPost({action:"upsert", lead:{ID:l.ID, Status:status}, logStat:{intern:l["Assigned To"]||"", outcome:status, dial:false}});
-    setBusy(false); if(res.ok){ notify("Closed: "+status); refreshLight(); } else notify("Failed: "+res.error);
+    const res=await apiPost({action:"upsert", lead:patch, logStat:{intern:l["Assigned To"]||"", outcome:status, dial:false}});
+    setBusy(false); if(res.ok){ notify("Closed: "+status); if(status==="Landed") celebrate("Landed"); refreshLight(); } else notify("Failed: "+res.error);
+  }
+  async function quote(){
+    const amt=askAmount("💸 Quote amount in ₹:"); if(!amt) return;
+    setBusy(true);
+    const res=await apiPost({action:"upsert", lead:{ID:l.ID, Notes:noteWith(l,"💸 Quoted "+inr(amt),l["Assigned To"])}});
+    setBusy(false); if(res.ok){ notify("Quote saved: "+inr(amt)); refreshLight(); } else notify("Failed: "+res.error);
   }
   const [shown,setShown]=useState(false);
   async function markShowup(){
@@ -2071,7 +2442,7 @@ function CloseItem({item,refresh,notify}){
     // so you can still close the meeting afterwards.
     setBusy(true);
     const res=await apiPost({action:"upsert", lead:{ID:l.ID}, logStat:{intern:l["Assigned To"]||"", outcome:"Showed Up", dial:false}});
-    setBusy(false); if(res.ok){ setShown(true); notify("Marked showed up ✓"); } else notify("Failed: "+res.error);
+    setBusy(false); if(res.ok){ setShown(true); notify("Marked showed up ✓"); celebrate("Showed Up"); } else notify("Failed: "+res.error);
   }
   async function saveResched(){
     setBusy(true);
@@ -2106,6 +2477,7 @@ function CloseItem({item,refresh,notify}){
               <option value="">Close as…</option>
               <option>Landed</option><option>No Show</option><option>Interested</option><option>Not Interested</option><option>Dumped</option>
             </select>
+            <button onClick={quote} disabled={busy} className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 text-sm">💸 Quote</button>
             <button onClick={()=>setResched(true)} className="px-2 py-1 rounded-lg bg-slate-100 text-sm">Reschedule</button>
             <button onClick={cancelIt} disabled={busy} className="px-2 py-1 rounded-lg bg-red-50 text-red-600 text-sm">✕ Delete</button>
           </div>
@@ -2134,6 +2506,7 @@ function MeetingsPipeline({leads,refresh,notify}){
   }
   return (
     <div className="space-y-4">
+      <RevenueCard leads={leads} title="💰 My revenue"/>
       <div className="bg-white rounded-2xl border border-slate-200 p-4">
         <div className="font-semibold mb-1">🔴 Needs closing ({due.length})</div>
         <div className="text-[11px] text-slate-400 mb-2">Meetings & follow-ups whose time has passed but aren’t closed yet. Close each with an outcome (or reschedule) so nothing sits in limbo.</div>
@@ -2334,10 +2707,10 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
   const tabs=[["dashboard","📊 Dashboard"],["leads","📇 Leads"],["pipeline","✅ Pipeline"],["team","👥 Team"],["archive","🗄 Archive"],["bin","🗑 Bin"]];
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-4">
-      <div className="flex gap-1 bg-slate-100 rounded-full p-1 w-max">
+      <div className="flex gap-1 bg-white/80 border border-slate-200 shadow-sm rounded-full p-1 w-max max-w-full overflow-x-auto no-scrollbar">
         {tabs.map(([id,label])=>(
           <button key={id} onClick={()=>setSection(id)}
-            className={"px-4 py-1.5 rounded-full text-sm "+(section===id?"bg-white shadow font-medium":"text-slate-600")}>{label}
+            className={"px-4 py-1.5 rounded-full text-sm whitespace-nowrap "+(section===id?"bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md font-semibold":"text-slate-600 hover:text-slate-900")}>{label}
             {id==="team" && pendingDeviceCount>0 &&
               <span className="ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold align-middle">{pendingDeviceCount}</span>}
           </button>
@@ -2346,7 +2719,9 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
 
       {section==="dashboard" && <React.Fragment>
         <WorkAsBar internNames={internNames} onOpen={setWorkAs}/>
+        <MeetingSoon leads={leads} user="Team"/>
         <Leaderboard title="🏆 Team Arena"/>
+        <RevenueCard leads={leads}/>
         <FunnelDashboard leads={leads} internNames={internNames}/>
         <SummaryCards leads={leads}/>
         <TeamActivity sessions={sessions} internNames={internNames}/>
@@ -3584,6 +3959,7 @@ function isFresh(l){
   return inSet && String(l["Last Follow-up Date"]||"").indexOf(todayISO())<0;
 }
 
+const STATUS_DOT={"New":"#94a3b8","Not Answering":"#f97316","Owner Not Available":"#fb923c","Interested":"#3b82f6","Website Sent":"#06b6d4","Schedule Follow-up":"#f59e0b","Meeting Booked":"#22c55e","No Show":"#ef4444","Not Interested":"#64748b","Dumped":"#334155"};
 function InternFilters({mine,sel,toggleChip,fday,setFday,sortBy,setSortBy}){
   const cs=function(name){ return mine.filter(function(l){ return statusOf(l).toLowerCase()===name.toLowerCase(); }).length; };
   const chips=[
@@ -3608,7 +3984,7 @@ function InternFilters({mine,sel,toggleChip,fday,setFday,sortBy,setSortBy}){
           const active=!fday && sel.indexOf(c[0])>=0;
           return <button key={c[0]} onClick={function(){ toggleChip(c[0]); }}
             className={"px-2.5 py-1 rounded-full text-xs border "+(active?"bg-indigo-600 text-white border-indigo-600":"bg-white border-slate-200 text-slate-600")}>
-            {c[1]} <span className={active?"opacity-90":"text-slate-400"}>{c[2]}</span></button>;
+            {STATUS_DOT[c[0]] && <span className="status-dot" style={{background:STATUS_DOT[c[0]]}}/>}{c[1]} <span className={active?"opacity-90":"text-slate-400"}>{c[2]}</span></button>;
         })}
       </div>
       <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
@@ -3736,15 +4112,16 @@ function InternView({user,leads,stats,refresh,notify,actor}){
     <div ref={splitRef} className="p-4 max-w-2xl lg:max-w-none mx-auto flex flex-col lg:flex-row lg:items-start gap-4 lg:gap-0" style={{"--splitw":splitW+"px"}}>
     <div className="space-y-4 w-full lg:w-[var(--splitw)] lg:max-w-[calc(100%_-_20rem)] lg:shrink-0 min-w-0">
       <GameHUD user={user}/>
+      <MeetingSoon leads={mine} user={user} actor={actor}/>
       <button onClick={()=>setShowScript(!showScript)} className="lg:hidden w-full py-2 rounded-xl bg-white border border-slate-200 text-sm text-slate-700">📜 {showScript?"Hide":"Show"} call script</button>
       <div className="flex items-center justify-between">
         <StatsBar s={myStats} today={callsToday}/>
         <div className="flex gap-1 bg-slate-100 rounded-full p-1">
-          <button onClick={()=>setMode("call")} className={"px-3 py-1 rounded-full text-sm "+(mode==="call"?"bg-white shadow":"")}>Call</button>
-          <button onClick={()=>setMode("close")} className={"px-3 py-1 rounded-full text-sm "+(mode==="close"?"bg-white shadow":"")}>Close{dueCount>0?" ("+dueCount+")":""}</button>
-          <button onClick={()=>setMode("board")} className={"px-3 py-1 rounded-full text-sm "+(mode==="board"?"bg-white shadow":"")}>🧭 Board</button>
-          <button onClick={()=>setMode("list")} className={"px-3 py-1 rounded-full text-sm "+(mode==="list"?"bg-white shadow":"")}>List</button>
-          <button onClick={()=>setMode("phone")} className={"px-3 py-1 rounded-full text-sm "+(mode==="phone"?"bg-white shadow":"")}>📱 Phone</button>
+          <button onClick={()=>setMode("call")} className={"px-3 py-1 rounded-full text-sm whitespace-nowrap "+(mode==="call"?"bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md font-semibold":"text-slate-600")}>Call</button>
+          <button onClick={()=>setMode("close")} className={"px-3 py-1 rounded-full text-sm whitespace-nowrap "+(mode==="close"?"bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md font-semibold":"text-slate-600")}>Close{dueCount>0?" ("+dueCount+")":""}</button>
+          <button onClick={()=>setMode("board")} className={"px-3 py-1 rounded-full text-sm whitespace-nowrap "+(mode==="board"?"bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md font-semibold":"text-slate-600")}>🧭 Board</button>
+          <button onClick={()=>setMode("list")} className={"px-3 py-1 rounded-full text-sm whitespace-nowrap "+(mode==="list"?"bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md font-semibold":"text-slate-600")}>List</button>
+          <button onClick={()=>setMode("phone")} className={"px-3 py-1 rounded-full text-sm whitespace-nowrap "+(mode==="phone"?"bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md font-semibold":"text-slate-600")}>📱 Phone</button>
         </div>
       </div>
       <QuickSchedule leads={mine} user={user} refresh={refresh} notify={notify}/>
@@ -3982,7 +4359,9 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
     const patch={ID:lead.ID};
     const effOutcome = opts.outcome!==undefined ? opts.outcome : outcome;
     if(effOutcome) patch.Status=effOutcome;
-    if(note.trim()){ const entry="["+nowStamp()+" · "+(actor||user)+"] "+note.trim();
+    let noteText=note.trim();
+    if(effOutcome==="Landed" && !opts.noStat){ const amt=askAmount("🏆 Client landed! Deal value in ₹ (optional):"); if(amt) noteText="💰 Landed "+inr(amt)+(noteText?(" — "+noteText):""); }
+    if(noteText){ const entry="["+nowStamp()+" · "+(actor||user)+"] "+noteText;
       patch.Notes=notesHistory?(notesHistory+"\n"+entry):entry; patch["Last Follow-up Date"]=todayISO(); }
     Object.assign(patch,extra||{});
     const payload={action:"upsert", lead:patch};
@@ -4015,15 +4394,42 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
     save({Status:"Interested","Meeting Date":"","Meeting Time":""},{outcome:"", noStat:true, stay:true, msg:"Meeting cancelled"});
   }
 
+  // Keyboard shortcuts (ignored while typing in a box). The latest handlers live in a ref.
+  const noteRef=useRef(null);
+  const keyRef=useRef(null);
+  keyRef.current={onOutcomeChange:onOutcomeChange, save:save, onNext:onNext, onPrev:onPrev, outcome:outcome, note:note, picker:picker, confirmPicker:confirmPicker, setPicker:setPicker, setOutcome:setOutcome, wa:wa, waMsg:waMsg};
+  const [keyFlash,setKeyFlash]=useState("");
+  useEffect(function(){
+    const map={"1":"Not Answering","2":"Owner Not Available","3":"Interested","4":"Not Interested","5":"Schedule Follow-up","6":"Meeting Booked","7":"Dumped"};
+    function onKey(e){
+      if(e.ctrlKey||e.metaKey||e.altKey) return;
+      const t=e.target, tag=(t&&t.tagName)||"";
+      if(/^(INPUT|TEXTAREA|SELECT)$/.test(tag) || (t&&t.isContentEditable)) return;
+      const k=keyRef.current; if(!k) return;
+      if(map[e.key]){ e.preventDefault(); k.onOutcomeChange(map[e.key]); setKeyFlash(map[e.key]); setTimeout(function(){ setKeyFlash(""); },900); }
+      else if(e.key==="Enter"){ if(k.picker){ e.preventDefault(); k.confirmPicker(); } else if(k.outcome||k.note.trim()){ e.preventDefault(); k.save(); } }
+      else if(e.key==="Escape"){ if(k.picker){ k.setPicker(null); k.setOutcome(""); } }
+      else if(e.key==="ArrowRight"){ k.onNext(); }
+      else if(e.key==="ArrowLeft"){ k.onPrev(); }
+      else if(e.key==="n"||e.key==="N"){ e.preventDefault(); noteRef.current && noteRef.current.focus(); }
+      else if((e.key==="w"||e.key==="W") && k.wa){ window.open("https://wa.me/"+k.wa+"?text="+k.waMsg,"_blank"); }
+    }
+    window.addEventListener("keydown",onKey);
+    return function(){ window.removeEventListener("keydown",onKey); };
+  },[]);
+
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-4">
-      <div className="flex items-center justify-between text-sm text-slate-400">
-        <button onClick={onPrev} disabled={position<=1} className="disabled:opacity-30">← Prev</button>
-        <span>{position} / {total}</span>
-        <button onClick={onNext} disabled={position>=total} className="disabled:opacity-30">Next →</button>
+    <div className="bg-white rounded-3xl border border-slate-200 p-5 space-y-4 overflow-hidden">
+      <div className="-mx-5 -mt-5 px-5 pt-4 pb-5 bg-gradient-to-br from-indigo-50 via-white to-fuchsia-50 border-b border-slate-100 space-y-3">
+      <div className="flex items-center justify-between text-sm text-slate-500">
+        <button onClick={onPrev} disabled={position<=1} className="px-3 py-1 rounded-full bg-white border border-slate-200 shadow-sm disabled:opacity-30">← Prev</button>
+        <span className="font-semibold tabular-nums">{position} / {total}</span>
+        <button onClick={onNext} disabled={position>=total} className="px-3 py-1 rounded-full bg-white border border-slate-200 shadow-sm disabled:opacity-30">Next →</button>
       </div>
-      <div>
-        <div className="text-xl font-bold">{lead.Clinic||lead.Name}</div>
+      <div className="flex items-start gap-3">
+        <Avatar name={lead.Clinic||lead.Name} size={52}/>
+        <div className="min-w-0 flex-1">
+        <div className="text-2xl font-extrabold text-slate-900 leading-tight">{lead.Clinic||lead.Name}</div>
         {lead.Clinic&&lead.Name && <div className="text-slate-500">{lead.Name}</div>}
         <div className="text-sm text-slate-500 mt-1 flex flex-wrap gap-x-3">
           {lead.City && <span>📍 {lead.City}</span>}
@@ -4035,6 +4441,8 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
         <div className="text-sm text-slate-500">
           {lead["Conflict Flag"]==="true" && <span className="text-red-500">⚠ slot conflict</span>}
         </div>
+        </div>
+      </div>
       </div>
       <div className="grid grid-cols-2 gap-2">
         <a href={"tel:"+digits(lead.Phone)} className="text-center py-3 rounded-xl bg-green-600 text-white font-semibold">📞 Call</a>
@@ -4045,7 +4453,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
         <button onClick={waMeetingClick} className="py-3 rounded-xl bg-emerald-700 text-white font-semibold" title={booked&&waMeet?"Sends the meeting confirmation with the Google Meet link":"Pick the meeting time; WhatsApp opens when you confirm"}>📅 WhatsApp: meeting</button>
       </div>
       <div className="text-center">
-        <a href={"tel:"+digits(lead.Phone)} className="text-2xl font-bold text-slate-800 tracking-wider">{lead.Phone||"— no number"}</a>
+        <a href={"tel:"+digits(lead.Phone)} className="text-3xl font-black tracking-wider bg-gradient-to-r from-indigo-600 to-fuchsia-600 bg-clip-text text-transparent">{lead.Phone||"— no number"}</a>
         {lead.Email && <div className="text-xs text-slate-400 mt-0.5">{lead.Email}</div>}
       </div>
       {mapsUrl(lead) && <a href={mapsUrl(lead)} target="_blank" rel="noopener" className="block text-center text-sm text-blue-600">📍 Open in Google Maps</a>}
@@ -4081,9 +4489,9 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
           <button onClick={()=>save({Status:"Website Sent"},{outcome:"Website Sent",msg:"Website sent ✓",stay:true})} disabled={saving}
             className="flex-1 py-2 rounded-xl bg-cyan-600 text-white text-sm font-semibold disabled:opacity-40">🌐 Website sent</button>
         </div>
-        <select value={outcome} onChange={e=>onOutcomeChange(e.target.value)} className="w-full border rounded-xl px-3 py-2">
+        <select value={outcome} onChange={e=>onOutcomeChange(e.target.value)} className={"w-full border rounded-xl px-3 py-2 "+(outcome?"border-indigo-400 ring-2 ring-indigo-100 font-semibold":"")}>
           <option value="">— Select outcome —</option>{OUTCOMES.map(o=><option key={o}>{o}</option>)}</select>
-        <textarea value={note} onChange={e=>setNote(e.target.value)} rows={2} placeholder="Add a note (appended, never overwrites)…" className="w-full border rounded-xl px-3 py-2 text-sm"/>
+        <textarea ref={noteRef} value={note} onChange={e=>setNote(e.target.value)} rows={2} placeholder="Add a note (appended, never overwrites)…" className="w-full border rounded-xl px-3 py-2 text-sm"/>
       </div>
 
       {picker &&
@@ -4102,6 +4510,8 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
 
       <button onClick={()=>save()} disabled={saving||(!outcome&&!note.trim())} className="w-full py-3 rounded-xl bg-indigo-600 text-white font-semibold disabled:opacity-40">
         {saving?"Saving…":"Save & Next →"}</button>
+      {keyFlash && <div className="text-center text-xs font-semibold text-indigo-600 game-fade">⌨ {keyFlash}, press Enter to save</div>}
+      <div className="hidden sm:block text-[11px] text-slate-400 text-center leading-relaxed">⌨ <b>1</b> No answer · <b>2</b> Owner N/A · <b>3</b> Interested · <b>4</b> Not int. · <b>5</b> Follow-up · <b>6</b> Meeting · <b>7</b> Dumped · <b>Enter</b> save · <b>N</b> note · <b>W</b> WhatsApp · <b>← →</b> move</div>
     </div>
   );
 }
@@ -4126,7 +4536,7 @@ class AppErrorBoundary extends React.Component{
     );
   }
 }
-ReactDOM.createRoot(document.getElementById("root")).render(<AppErrorBoundary><App/></AppErrorBoundary>);
+ReactDOM.createRoot(document.getElementById("root")).render(<AppErrorBoundary>{IS_TV?<TVMode/>:<App/>}</AppErrorBoundary>);
 </script>
 
 <script>

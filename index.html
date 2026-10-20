@@ -688,6 +688,42 @@ function AdminKeyPrompt(){
   );
 }
 
+/* ============ SPLIT DIVIDER (drag to share space between the queue and the script) ============ */
+const SPLIT_KEY = "reactivify.splitW";
+const SPLIT_DEFAULT = 672;   // the old fixed width of the queue column (42rem)
+function useSplitWidth(){
+  const [w,setW]=useState(function(){ try{ return Number(localStorage.getItem(SPLIT_KEY))||SPLIT_DEFAULT; }catch(e){ return SPLIT_DEFAULT; } });
+  useEffect(function(){ try{ localStorage.setItem(SPLIT_KEY, String(Math.round(w))); }catch(e){} },[w]);
+  return [w,setW];
+}
+function SplitDivider({width,setWidth,containerRef}){
+  const [drag,setDrag]=useState(false);
+  function down(e){
+    e.preventDefault();
+    const startX=e.clientX, startW=width;
+    const box=containerRef.current ? containerRef.current.getBoundingClientRect().width : window.innerWidth;
+    setDrag(true);
+    document.body.style.cursor="col-resize"; document.body.style.userSelect="none";
+    function move(ev){ setWidth(Math.max(380, Math.min(box-300, startW+ev.clientX-startX))); }
+    function up(){
+      setDrag(false); document.body.style.cursor=""; document.body.style.userSelect="";
+      window.removeEventListener("pointermove",move); window.removeEventListener("pointerup",up);
+    }
+    window.addEventListener("pointermove",move); window.addEventListener("pointerup",up);
+  }
+  function key(e){
+    if(e.key==="ArrowLeft"){ e.preventDefault(); setWidth(Math.max(380,width-40)); }
+    if(e.key==="ArrowRight"){ e.preventDefault(); setWidth(width+40); }
+  }
+  return (
+    <div onPointerDown={down} onDoubleClick={()=>setWidth(SPLIT_DEFAULT)} onKeyDown={key} tabIndex={0} role="separator" aria-orientation="vertical"
+      title="Drag to resize · double-click to reset" className="hidden lg:block self-stretch w-5 shrink-0 cursor-col-resize relative group outline-none">
+      <div className={"absolute inset-y-0 left-1/2 -translate-x-1/2 w-px transition-colors "+(drag?"bg-indigo-500":"bg-slate-200 group-hover:bg-indigo-300")}></div>
+      <div className={"sticky top-[45vh] mx-auto w-2 h-12 rounded-full transition-colors "+(drag?"bg-indigo-500":"bg-slate-300 group-hover:bg-indigo-400")}></div>
+    </div>
+  );
+}
+
 /* ============ CALL SCRIPT (one shared script, stored in the Cloudflare Worker) ============ */
 const SCRIPT_URL = API_URL + "/script";
 const SCRIPT_LOCAL = "reactivify.script";
@@ -2002,7 +2038,7 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
 
   if(workAs){
     return (
-      <div className="p-4 max-w-2xl lg:max-w-[92rem] mx-auto space-y-3">
+      <div className="p-4 max-w-2xl lg:max-w-none mx-auto space-y-3">
         <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-sm">
           <span>🧑‍💼 Working in <b>{workAs}</b>'s queue (admin) · your notes are tagged “Team”</span>
           <button onClick={()=>setWorkAs("")} className="px-3 py-1 rounded-lg bg-white border shrink-0 ml-2">← Back to admin</button>
@@ -3346,6 +3382,8 @@ function InternUpload({user,refresh,notify}){
 function InternView({user,leads,stats,refresh,notify,actor}){
   const [mode,setMode]=useState("call");
   const [showScript,setShowScript]=useState(false);   // phones only; the script is always shown on wide screens
+  const [splitW,setSplitW]=useSplitWidth();
+  const splitRef=useRef(null);
   const [sel,setSel]=useState(["fresh"]);        // multi-select: ["fresh"] | ["all"] | [status,...]
   const [fday,setFday]=useState("");             // "worked on" date (yyyy-mm-dd)
   const [cat,setCat]=useState(function(){ try{ return localStorage.getItem("reactivify.cat."+user)||"All"; }catch(e){ return "All"; } });  // Category (Folder) filter — persisted per user
@@ -3403,8 +3441,8 @@ function InternView({user,leads,stats,refresh,notify,actor}){
   const emptyMsg = fday ? "No leads worked on that date." : (sel.indexOf("fresh")>=0 ? "All caught up for today. 🎉 Fresh leads reset tomorrow — or pick another filter above." : "No leads in this filter.");
 
   return (
-    <div className="p-4 max-w-2xl lg:max-w-[90rem] mx-auto flex flex-col lg:flex-row lg:items-start gap-4 lg:gap-5">
-    <div className="space-y-4 w-full lg:w-[42rem] lg:shrink-0 min-w-0">
+    <div ref={splitRef} className="p-4 max-w-2xl lg:max-w-none mx-auto flex flex-col lg:flex-row lg:items-start gap-4 lg:gap-0" style={{"--splitw":splitW+"px"}}>
+    <div className="space-y-4 w-full lg:w-[var(--splitw)] lg:max-w-[calc(100%_-_20rem)] lg:shrink-0 min-w-0">
       <GameHUD user={user}/>
       <button onClick={()=>setShowScript(!showScript)} className="lg:hidden w-full py-2 rounded-xl bg-white border border-slate-200 text-sm text-slate-700">📜 {showScript?"Hide":"Show"} call script</button>
       <div className="flex items-center justify-between">
@@ -3460,7 +3498,8 @@ function InternView({user,leads,stats,refresh,notify,actor}){
                   onPrev={()=>setIdx(Math.max(0,safeIdx-1))} onNext={()=>setIdx(Math.min(sorted.length-1,safeIdx+1))}
                   onSaved={refresh} notify={notify}/>)}
     </div>
-    <aside className={(showScript?"block":"hidden")+" order-first lg:order-none lg:block w-full lg:flex-1 lg:min-w-[22rem] lg:sticky lg:top-4"}>
+    <SplitDivider width={splitW} setWidth={setSplitW} containerRef={splitRef}/>
+    <aside className={(showScript?"block":"hidden")+" order-first lg:order-none lg:block w-full lg:flex-1 lg:min-w-[18rem] lg:sticky lg:top-4"}>
       <ScriptPanel user={actor||user}/>
     </aside>
     </div>

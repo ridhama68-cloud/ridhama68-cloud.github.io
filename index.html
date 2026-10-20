@@ -37,6 +37,12 @@
   .game-bar { transition: width 1s cubic-bezier(.2,.8,.2,1); }
   .game-row { animation: rv-row .4s cubic-bezier(.2,.8,.2,1) both; }
   .game-shine { background-image: linear-gradient(110deg, transparent 35%, rgba(255,255,255,.75) 50%, transparent 65%), linear-gradient(135deg, #fffbeb, #fef9c3); background-size: 250% 100%, 100% 100%; animation: rv-shine 3.2s linear infinite; }
+  @keyframes rv-spin { to { transform: translate(-50%,-50%) rotate(360deg); } }
+  @keyframes rv-gold { from { background-position: 0% 50%; } to { background-position: 200% 50%; } }
+  @keyframes rv-drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+  .hero-rays { left: 50%; top: 50%; width: 170vmax; height: 170vmax; transform: translate(-50%,-50%); background: repeating-conic-gradient(from 0deg, rgba(251,191,36,.22) 0deg 9deg, transparent 9deg 18deg); -webkit-mask-image: radial-gradient(circle, #000 0%, transparent 58%); mask-image: radial-gradient(circle, #000 0%, transparent 58%); animation: rv-spin 22s linear infinite; }
+  .hero-title { background: linear-gradient(90deg,#fde68a,#f59e0b,#fff7ed,#f59e0b,#fde68a); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: rv-gold 2.4s linear infinite; filter: drop-shadow(0 6px 24px rgba(245,158,11,.45)); }
+  .combo-bar { transform-origin: left; animation: rv-drain linear forwards; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
   }
@@ -333,6 +339,7 @@ function gameLoad(force){
   apiGet("getDailyCalls").then(function(r){
     if(r && r.ok){
       _gDaily=r.daily||{}; _gLastLoad=Date.now();
+      try{ teamHypeCheck(); }catch(e){}
       for(let i=_gPending.length-1;i>=0;i--){ const b=_gPending[i]; if(b.confirmedAt && b.confirmedAt<started) _gPending.splice(i,1); }
       _gEmit();
     }
@@ -362,14 +369,32 @@ function gameConfirm(opId){ _gPending.forEach(function(b){ if(b.opId===opId && !
 function gameBump(intern,outcome,opId){
   if(!intern || !outcome) return;
   _gPending.push({intern:intern, outcome:outcome, day:todayISO(), opId:opId, confirmedAt:0});
-  _gEmit();
   const one={calls:1}; one[outcome]=1;
   const s=gRecStats(one);
+  if(s.points>0){ const now=Date.now(); _combo.n=(now-_combo.at<COMBO_MS)?_combo.n+1:1; _combo.at=now; }
+  _gEmit();
   if(s.points<=0) return;
-  const landed=/landed/i.test(outcome), meet=/meeting booked/i.test(outcome), show=/showed up/i.test(outcome);
-  const label = landed?"🏆 Client landed!" : meet?"📅 Meeting booked!" : show?"🤩 Show-up!" : /website sent/i.test(outcome)?"🌐 Website sent" : s.convos?"💬 Conversation":"📞 Dial";
+  const combo=_combo.n, who=hypeName(intern);
+  const landed=/landed/i.test(outcome), meet=/meeting booked/i.test(outcome), show=/showed up/i.test(outcome), web=/website sent/i.test(outcome);
+  const label = landed?"🏆 Client landed!" : meet?"📅 Meeting booked!" : show?"🤩 Show-up!" : web?"🌐 Website sent" : s.convos?"💬 Conversation":"📞 Dial";
   fx({type:"pop", text:label+"   +"+s.points+" pts", tone:(landed||meet||show)?"bg-gradient-to-r from-amber-500 to-orange-500":(s.convos?"bg-gradient-to-r from-indigo-600 to-violet-600":"bg-slate-800")});
-  if(landed) confetti(2); else if(meet||show) confetti(1.2);
+  if(landed){
+    sfx("landed"); confetti(2.4);
+    fx({type:"hero", icon:"🏆", kicker:"Client landed", title:who, sub:"is an absolute legend"});
+    announce(pickOne(HYPE_LAND).replace("{n}",who),{delay:1300});
+  } else if(meet){
+    sfx("meeting"); confetti(1.6);
+    fx({type:"hero", icon:"👑", kicker:"Meeting booked", title:who, sub:"is the greatest"});
+    announce((Math.random()<0.5?HYPE_MEET[0]:pickOne(HYPE_MEET)).replace("{n}",who),{delay:900});
+  } else if(show){
+    sfx("showup"); confetti(1.2);
+    announce(who+"'s client showed up!",{delay:600});
+  } else {
+    sfx(web?"web":(s.convos?"win":"dial"),{combo:combo});
+    if(combo>=3) sfx("combo",{combo:combo});
+  }
+  if(combo>=3) fx({type:"pop", text:"⚡ COMBO x"+combo, tone:"bg-gradient-to-r from-fuchsia-600 to-pink-500"});
+  if(!meet && !landed && (combo===5||combo===10||combo===15||combo===20)) announce(combo+" in a row! "+who+" is on fire!",{delay:450});
 }
 function useGame(){
   const [ver,setVer]=useState(_gVer);
@@ -389,6 +414,225 @@ function teamBoard(daily,range){
     const s= range==="week" ? g.week : range==="month" ? g.month : g.today;
     return {name:n, s:s, streak:g.streak, level:g.level.cur};
   }).sort(function(a,b){ return (b.s.points-a.s.points) || (b.s.dials-a.s.dials) || a.name.localeCompare(b.name); });
+}
+
+// ---- SOUND: everything is synthesized with Web Audio, so there are no files to load ----
+const SND_KEY="reactivify.sound";
+let _snd=(function(){ const d={on:true, voice:true, team:true, vol:0.7}; try{ return Object.assign(d, JSON.parse(localStorage.getItem(SND_KEY)||"{}")); }catch(e){ return d; } })();
+const _sndSubs=[];
+function setSnd(patch){
+  _snd=Object.assign({},_snd,patch);
+  try{ localStorage.setItem(SND_KEY, JSON.stringify(_snd)); }catch(e){}
+  if(_au.master) _au.master.gain.value=_snd.vol;
+  if(!_snd.on || !_snd.voice){ try{ window.speechSynthesis && speechSynthesis.cancel(); }catch(e){} }
+  _sndSubs.slice().forEach(function(f){ f(_snd); });
+}
+function useSnd(){
+  const [s,setS]=useState(_snd);
+  useEffect(function(){ _sndSubs.push(setS); return function(){ const i=_sndSubs.indexOf(setS); if(i>=0) _sndSubs.splice(i,1); }; },[]);
+  return s;
+}
+const _au={ctx:null, master:null, verb:null};
+// Builds output -> compressor -> speakers, plus a small hall reverb made from decaying noise.
+function audioRig(ctx){
+  const master=ctx.createGain(); master.gain.value=_snd.vol;
+  const comp=ctx.createDynamicsCompressor(); comp.threshold.value=-14; comp.ratio.value=4;
+  master.connect(comp); comp.connect(ctx.destination);
+  const len=Math.floor(ctx.sampleRate*2.4), ir=ctx.createBuffer(2,len,ctx.sampleRate);
+  for(let c=0;c<2;c++){ const d=ir.getChannelData(c); for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len,3); }
+  const verb=ctx.createConvolver(); verb.buffer=ir;
+  const wet=ctx.createGain(); wet.gain.value=0.32; verb.connect(wet); wet.connect(master);
+  return {ctx:ctx, master:master, verb:verb};
+}
+function audio(){
+  if(!_au.ctx){
+    const AC=window.AudioContext||window.webkitAudioContext; if(!AC) return null;
+    try{ Object.assign(_au, audioRig(new AC())); }catch(e){ return null; }
+  }
+  if(_au.ctx.state==="suspended"){ try{ _au.ctx.resume(); }catch(e){} }
+  return _au;
+}
+// Browsers only allow sound after a click or key press, so wake the audio on the first one.
+["pointerdown","keydown"].forEach(function(ev){ window.addEventListener(ev, function(){ if(_snd.on) audio(); }, {once:true, capture:true}); });
+
+const MIDI=function(n){ return 440*Math.pow(2,(n-69)/12); };
+function _note(rig,f,t,dur,o){
+  o=o||{}; const ctx=rig.ctx;
+  const osc=ctx.createOscillator(); osc.type=o.type||"triangle"; osc.frequency.setValueAtTime(f,t);
+  if(o.slide) osc.frequency.exponentialRampToValueAtTime(o.slide,t+dur);
+  if(o.detune) osc.detune.value=o.detune;
+  const g=ctx.createGain(); const peak=o.gain||0.25;
+  g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(peak,t+(o.a||0.006));
+  if(o.hold) g.gain.setValueAtTime(peak,t+o.hold);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  let node=osc;
+  if(o.lp){ const lp=ctx.createBiquadFilter(); lp.type="lowpass"; lp.frequency.value=o.lp; osc.connect(lp); node=lp; }
+  node.connect(g); g.connect(rig.master); if(o.verb) g.connect(rig.verb);
+  osc.start(t); osc.stop(t+dur+0.05);
+}
+function _noise(rig,t,dur,o){
+  o=o||{}; const ctx=rig.ctx;
+  const buf=ctx.createBuffer(1,Math.floor(ctx.sampleRate*dur),ctx.sampleRate), d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+  const src=ctx.createBufferSource(); src.buffer=buf;
+  const bp=ctx.createBiquadFilter(); bp.type="bandpass"; bp.Q.value=o.q||1.2;
+  bp.frequency.setValueAtTime(o.from||1000,t); if(o.to) bp.frequency.exponentialRampToValueAtTime(o.to,t+dur);
+  const g=ctx.createGain(); const peak=o.gain||0.2;
+  g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(peak,t+(o.a||0.04)); g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  src.connect(bp); bp.connect(g); g.connect(rig.master); if(o.verb) g.connect(rig.verb);
+  src.start(t); src.stop(t+dur);
+}
+// A choir "aah": detuned saws with vibrato, shaped by vowel formants, swelling into the hall.
+function _choirChord(rig,notes,t,dur,level){
+  const ctx=rig.ctx;
+  const out=ctx.createGain();
+  out.gain.setValueAtTime(0.0001,t); out.gain.exponentialRampToValueAtTime(level||0.9,t+0.4);
+  out.gain.setValueAtTime(level||0.9,t+Math.max(0.45,dur-0.6)); out.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  const mix=ctx.createGain(); mix.gain.value=1;
+  [[750,1.0],[1150,0.55],[2800,0.22]].forEach(function(f){
+    const bp=ctx.createBiquadFilter(); bp.type="bandpass"; bp.frequency.value=f[0]; bp.Q.value=6;
+    const g=ctx.createGain(); g.gain.value=f[1]*3.2; mix.connect(bp); bp.connect(g); g.connect(out);
+  });
+  const lfo=ctx.createOscillator(); lfo.frequency.value=5.3; const lg=ctx.createGain(); lg.gain.value=7; lfo.connect(lg);
+  notes.forEach(function(n){ [-11,-3,5,12].forEach(function(dt){
+    const o=ctx.createOscillator(); o.type="sawtooth"; o.frequency.value=MIDI(n); o.detune.value=dt+(Math.random()*6-3);
+    lg.connect(o.detune);
+    const g=ctx.createGain(); g.gain.value=0.05; o.connect(g); g.connect(mix);
+    o.start(t); o.stop(t+dur+0.1);
+  }); });
+  lfo.start(t); lfo.stop(t+dur+0.1);
+  out.connect(rig.master); out.connect(rig.verb);
+}
+// "Hal-le-lu-jah" style progression: C -> F -> C (big).
+function _choir(rig,t){
+  _choirChord(rig,[48,60,64,67],t,1.5,0.8);
+  _choirChord(rig,[53,60,65,69],t+1.3,1.3,0.85);
+  _choirChord(rig,[48,60,64,67,72],t+2.45,2.4,1.0);
+}
+function _fanfare(rig,t,up){
+  up=up||0;
+  const brass={type:"sawtooth",lp:2400,gain:0.16,verb:1};
+  [[67,0,0.13],[67,0.14,0.1],[67,0.25,0.1],[72,0.37,0.7]].forEach(function(n){ _note(rig,MIDI(n[0]+up),t+n[1],n[2]+0.08,Object.assign({},brass,{hold:n[2]*0.7})); });
+  [60,64,67].forEach(function(n){ _note(rig,MIDI(n+up),t+0.37,0.9,Object.assign({},brass,{gain:0.09,hold:0.5})); });
+  _noise(rig,t+0.37,0.5,{from:3000,q:0.8,gain:0.05});   // cymbal-ish shimmer
+}
+function _applause(rig,t,dur){
+  for(let i=0;i<46;i++) _noise(rig,t+Math.random()*dur,0.05+Math.random()*0.05,{from:1400+Math.random()*2600,q:2.2,gain:0.05+Math.random()*0.07,a:0.004});
+}
+// name: dial | win | web | meeting | landed | showup | levelup | badge | goal | team | combo
+// opt.combo raises the pitch of quick back-to-back calls.
+function sfxOn(rig,name,opt){
+  opt=opt||{}; const t=rig.ctx.currentTime+0.02, up=opt.combo?Math.min(12,(opt.combo-1)*2):0;
+  if(name==="dial"){ [76,83].forEach(function(n,i){ _note(rig,MIDI(n+up),t+i*0.075,0.22,{type:"sine",gain:0.2,verb:1}); }); }
+  else if(name==="win"){
+    [60,64,67,72].forEach(function(n,i){ _note(rig,MIDI(n+up),t+i*0.07,0.3,{type:"triangle",gain:0.2,verb:1}); });
+    _note(rig,MIDI(76+up),t+0.28,0.7,{type:"triangle",gain:0.18,verb:1}); _note(rig,MIDI(88+up),t+0.28,0.5,{type:"sine",gain:0.05});
+  }
+  else if(name==="web"){ _noise(rig,t,0.32,{from:500,to:6000,gain:0.16}); [79,84,88].forEach(function(n,i){ _note(rig,MIDI(n),t+0.2+i*0.06,0.45,{type:"sine",gain:0.16,verb:1}); }); }
+  else if(name==="meeting"){ _fanfare(rig,t); _choir(rig,t+0.95); }
+  else if(name==="landed"){ _fanfare(rig,t); _fanfare(rig,t+1.1,5); _choir(rig,t+2.1); _applause(rig,t+1.2,3); }
+  else if(name==="showup"){ _fanfare(rig,t); _applause(rig,t+0.4,1.6); }
+  else if(name==="levelup"){
+    for(let i=0;i<14;i++) _note(rig,MIDI(60+i*2),t+i*0.035,0.16,{type:"square",lp:3000,gain:0.07});
+    [72,76,79,84].forEach(function(n){ _note(rig,MIDI(n),t+0.52,1.3,{type:"triangle",gain:0.13,verb:1,hold:0.4}); });
+  }
+  else if(name==="badge"){ for(let i=0;i<9;i++) _note(rig,1600+Math.random()*2400,t+i*0.06+Math.random()*0.03,0.35,{type:"sine",gain:0.08,verb:1}); }
+  else if(name==="goal"){ sfxOn(rig,"win"); _applause(rig,t+0.25,2.2); }
+  else if(name==="team"){ [84,91].forEach(function(n,i){ _note(rig,MIDI(n),t+i*0.11,0.6,{type:"sine",gain:0.16,verb:1}); }); }
+  else if(name==="combo"){ _note(rig,MIDI(84+up),t,0.12,{type:"square",lp:5000,gain:0.07}); _note(rig,MIDI(91+up),t+0.07,0.25,{type:"square",lp:5000,gain:0.07}); }
+}
+function sfx(name,opt){ if(!_snd.on) return; const rig=audio(); if(!rig) return; try{ sfxOn(rig,name,opt); }catch(e){} }
+
+// ---- ANNOUNCER: the browser's own text-to-speech ----
+let _voice=null;
+function pickVoice(){
+  try{
+    const vs=window.speechSynthesis ? speechSynthesis.getVoices() : [];
+    const pref=["Google UK English Male","Microsoft Ryan","Daniel","Microsoft Guy","Google US English","Microsoft David","Microsoft Mark"];
+    for(let i=0;i<pref.length;i++){ const v=vs.find(function(x){ return x.name.indexOf(pref[i])>=0; }); if(v) return v; }
+    return vs.find(function(x){ return /^en/i.test(x.lang); }) || null;
+  }catch(e){ return null; }
+}
+if(window.speechSynthesis){ try{ _voice=pickVoice(); speechSynthesis.addEventListener("voiceschanged", function(){ _voice=pickVoice(); }); }catch(e){} }
+function announce(text,opt){
+  if(!_snd.on || !_snd.voice || !window.speechSynthesis) return;
+  opt=opt||{};
+  setTimeout(function(){
+    try{
+      speechSynthesis.cancel();
+      const u=new SpeechSynthesisUtterance(text);
+      if(_voice) u.voice=_voice;
+      u.rate=opt.rate||0.92; u.pitch=opt.pitch||1; u.volume=Math.min(1,_snd.vol+0.25);
+      speechSynthesis.speak(u);
+    }catch(e){}
+  }, opt.delay||0);
+}
+function pickOne(a){ return a[Math.floor(Math.random()*a.length)]; }
+const HYPE_MEET=["{n} is the greatest!","All hail {n}! Meeting booked!","{n} does it again!","{n} is unstoppable!","Make way for {n}, the meeting machine!","Ladies and gentlemen... {n}!"];
+const HYPE_LAND=["Client landed! {n} is a legend!","{n} just closed a deal! Absolutely legendary!","Bow down to {n}! Client landed!"];
+const HYPE_TITLE=["is the greatest","is unstoppable","does it again","is on fire","is the meeting machine"];
+function hypeName(n){ return String(n||"").trim() || "You"; }
+
+// ---- COMBO: calls saved within 4 minutes of each other chain up ----
+const COMBO_MS=4*60*1000;
+const _combo={n:0, at:0};
+function comboNow(){ return (Date.now()-_combo.at<COMBO_MS) ? _combo.n : 0; }
+
+// ---- TEAM HYPE: when a teammate books a meeting, everyone else hears about it ----
+let _gMe="", _gPrevToday=null;
+function teamHypeCheck(){
+  const cur=(_gDaily && _gDaily[todayISO()]) || {};
+  if(_gPrevToday && _snd.team){
+    const me=String(_gMe||"").toLowerCase();
+    let shown=0;
+    Object.keys(cur).forEach(function(n){
+      if(shown>=2 || n==="Team" || n.toLowerCase()===me) return;
+      const a=cur[n]||{}, b=_gPrevToday[n]||{};
+      const dl=(a["Landed"]||0)-(b["Landed"]||0), dm=(a["Meeting Booked"]||0)-(b["Meeting Booked"]||0);
+      if(dl<=0 && dm<=0) return;
+      shown++;
+      const landed=dl>0;
+      fx({type:"pop", text:(landed?"🏆 ":"🎉 ")+n+(landed?" just landed a client!":" just booked a meeting!"), tone:"bg-gradient-to-r from-amber-500 to-orange-500"});
+      confetti(0.5);
+      sfx("team");
+      announce(n+(landed?" just landed a client!":" just booked a meeting!"),{delay:500});
+    });
+  }
+  _gPrevToday=JSON.parse(JSON.stringify(cur));
+}
+
+function SoundPanel(){
+  const s=useSnd();
+  const row=function(label,key,desc){
+    return (
+      <label className="flex items-center justify-between gap-3 py-2 border-b border-slate-100 last:border-0 cursor-pointer">
+        <span><span className="text-sm font-medium text-slate-800">{label}</span><span className="block text-[11px] text-slate-400">{desc}</span></span>
+        <button onClick={()=>setSnd({[key]:!s[key]})} className={"w-11 h-6 rounded-full relative shrink-0 "+(s[key]?"bg-indigo-600":"bg-slate-300")}>
+          <span className={"absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all "+(s[key]?"left-[22px]":"left-0.5")}/>
+        </button>
+      </label>
+    );
+  };
+  const test=function(label,fn){ return <button onClick={fn} className="px-3 py-1.5 rounded-full bg-slate-100 hover:bg-indigo-50 text-xs text-slate-700">▶ {label}</button>; };
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-4">
+      <div className="font-semibold mb-1">🔊 Sound</div>
+      {row("Sound effects","on","Win sounds, fanfares and the choir")}
+      {row("Announcer voice","voice","Says who booked the meeting")}
+      {row("Teammate alerts","team","Hear it when someone else books")}
+      <div className="flex items-center gap-3 py-2">
+        <span className="text-sm text-slate-600 w-16">Volume</span>
+        <input type="range" min="0" max="1" step="0.05" value={s.vol} onChange={e=>setSnd({vol:Number(e.target.value)})} className="flex-1 accent-indigo-600"/>
+      </div>
+      <div className="flex flex-wrap gap-2 mt-1">
+        {test("Call done",function(){ sfx("win"); })}
+        {test("Combo",function(){ sfx("combo",{combo:4}); sfx("win",{combo:4}); })}
+        {test("Meeting booked",function(){ sfx("meeting"); announce(pickOne(HYPE_MEET).replace("{n}","Ridham"),{delay:700}); })}
+        {test("Level up",function(){ sfx("levelup"); })}
+        {test("Client landed",function(){ sfx("landed"); announce(pickOne(HYPE_LAND).replace("{n}","Ridham"),{delay:900}); })}
+      </div>
+    </div>
+  );
 }
 
 // ---- effects: floating "+points", confetti, celebration cards ----
@@ -436,6 +680,8 @@ function runConfetti(cv,power){
 function GameFX(){
   const [pops,setPops]=useState([]);
   const [modal,setModal]=useState(null);
+  const [hero,setHero]=useState(null);
+  const heroT=useRef(null);
   const canvasRef=useRef(null);
   useEffect(function(){
     const h=function(e){
@@ -444,13 +690,26 @@ function GameFX(){
         setTimeout(function(){ setPops(function(p){ return p.filter(function(x){ return x.id!==e.id; }); }); },1700);
       } else if(e.type==="confetti") runConfetti(canvasRef.current, e.power);
       else if(e.type==="modal") setModal(e);
+      else if(e.type==="hero"){ setHero(e); clearTimeout(heroT.current); heroT.current=setTimeout(function(){ setHero(null); },5200); }
     };
     _fxSubs.push(h);
     return function(){ const i=_fxSubs.indexOf(h); if(i>=0) _fxSubs.splice(i,1); };
   },[]);
   return (
     <React.Fragment>
-      <canvas ref={canvasRef} className="fixed inset-0 pointer-events-none" style={{width:"100vw",height:"100vh",zIndex:70}}/>
+      <canvas ref={canvasRef} className="fixed inset-0 pointer-events-none" style={{width:"100vw",height:"100vh",zIndex:85}}/>
+      {hero &&
+        <div className="fixed inset-0 flex items-center justify-center overflow-hidden cursor-pointer" style={{zIndex:75}} onClick={()=>setHero(null)}>
+          <div className="absolute inset-0 bg-slate-950/80 game-fade" style={{backdropFilter:"blur(4px)"}}/>
+          <div className="hero-rays absolute"/>
+          <div key={hero.id} className="relative text-center px-6 game-modal">
+            <div className="text-7xl sm:text-8xl game-bounce">{hero.icon}</div>
+            <div className="text-xs sm:text-sm uppercase tracking-[0.35em] text-amber-200 font-bold mt-5">{hero.kicker}</div>
+            <div className="hero-title text-5xl sm:text-7xl font-black mt-2 leading-tight">{hero.title}</div>
+            <div className="text-xl sm:text-3xl font-bold text-white mt-2">{hero.sub}</div>
+            <div className="text-[11px] text-white/50 mt-10">tap anywhere to keep dialing</div>
+          </div>
+        </div>}
       <div className="fixed left-1/2 bottom-24 flex flex-col items-center gap-2 pointer-events-none" style={{zIndex:65,transform:"translateX(-50%)"}}>
         {pops.map(function(p){ return <div key={p.id} className={"game-pop px-4 py-2 rounded-full text-sm font-bold shadow-xl text-white whitespace-nowrap "+(p.tone||"bg-indigo-600")}>{p.text}</div>; })}
       </div>
@@ -527,6 +786,15 @@ function GameHUD({user}){
   const pts=useCountUp(g ? g.today.points : 0);
   const xp=useCountUp(g ? g.points : 0);
   const lvl=g ? g.level.cur.n : 0, badgeKey=g ? g.badges.join(",") : "", goalHit=g ? g.today.dials>=GAME_GOAL : false;
+  const snd=useSnd();
+  useEffect(function(){ _gMe=user; return function(){ if(_gMe===user) _gMe=""; }; },[user]);
+  const combo=comboNow();
+  const [,setTick]=useState(0);
+  useEffect(function(){
+    if(!combo) return;
+    const id=setTimeout(function(){ setTick(function(x){ return x+1; }); }, Math.max(0,_combo.at+COMBO_MS-Date.now())+50);
+    return function(){ clearTimeout(id); };
+  },[combo,_combo.at]);
   // Celebrate level-ups, new badges and hitting today's goal (remembered per person on this device).
   useEffect(function(){
     if(!g) return;
@@ -537,14 +805,16 @@ function GameHUD({user}){
     if(prev){
       const fresh=g.badges.filter(function(b){ return (prev.badges||[]).indexOf(b)<0; });
       if(now.level>prev.level){
-        confetti(1.6);
+        confetti(1.6); sfx("levelup");
+        announce("Level up! "+user+" is now a "+g.level.cur.name+"!",{delay:700});
         fx({type:"modal", icon:g.level.cur.icon, kicker:"Level up", title:"You're now a "+g.level.cur.name+"!", body:"Level "+g.level.cur.n+" unlocked with "+g.points.toLocaleString()+" points. Keep that streak alive."});
       } else if(fresh.length){
         const b=BADGES.find(function(x){ return x.id===fresh[0]; });
-        confetti(0.9);
+        confetti(0.9); sfx("badge");
         fx({type:"modal", icon:b.icon, kicker:"Badge unlocked", title:b.name, body:b.desc+(fresh.length>1?("  (+"+(fresh.length-1)+" more)"):"")});
       } else if(goalHit && prev.goalDay!==today){
-        confetti(1.3);
+        confetti(1.3); sfx("goal");
+        announce(user+" hit the daily goal!",{delay:500});
         fx({type:"pop", text:"🎯 Daily goal smashed!"+(g.streak>1?("  🔥 "+g.streak+"-day streak"):""), tone:"bg-gradient-to-r from-amber-500 to-orange-500"});
       }
     }
@@ -576,15 +846,22 @@ function GameHUD({user}){
         <div className="relative mt-3 flex gap-2 flex-wrap items-center text-xs">
           <button onClick={()=>setPanel(panel==="board"?"":"board")} className={"px-3 py-1.5 rounded-full font-medium "+(panel==="board"?"bg-white text-indigo-700":"bg-white/15 hover:bg-white/25")}>🏆 Leaderboard</button>
           <button onClick={()=>setPanel(panel==="badges"?"":"badges")} className={"px-3 py-1.5 rounded-full font-medium "+(panel==="badges"?"bg-white text-indigo-700":"bg-white/15 hover:bg-white/25")}>🏅 Badges {g.badges.length}/{BADGES.length}</button>
+          <button onClick={()=>setPanel(panel==="sound"?"":"sound")} className={"px-3 py-1.5 rounded-full font-medium "+(panel==="sound"?"bg-white text-indigo-700":"bg-white/15 hover:bg-white/25")}>{snd.on?"🔊":"🔇"} Sound</button>
+          {combo>=2 && <span className="relative overflow-hidden px-3 py-1.5 rounded-full bg-fuchsia-500 font-bold shadow">⚡ Combo x{combo}<span key={_combo.at} className="combo-bar absolute left-0 bottom-0 h-0.5 w-full bg-white/90" style={{animationDuration:Math.max(0,_combo.at+COMBO_MS-Date.now())+"ms"}}/></span>}
           <span className="ml-auto opacity-85">{left>0 ? (left+" more dial"+(left>1?"s":"")+" to today's goal") : "Goal hit! Every call now is bonus XP ✨"}</span>
         </div>
       </div>
       {panel==="board" && <Leaderboard me={user}/>}
       {panel==="badges" && <BadgeShelf g={g}/>}
+      {panel==="sound" && <SoundPanel/>}
     </div>
   );
 }
 
+function SoundToggle(){
+  const s=useSnd();
+  return <button onClick={()=>setSnd({on:!s.on})} title={s.on?"Mute meeting alerts":"Turn sound on"} className="px-2 py-0.5 rounded-full bg-slate-100 text-xs font-normal">{s.on?"🔊":"🔇"}</button>;
+}
 function Leaderboard({me,title}){
   const daily=useGame();
   const [range,setRange]=useState("today");
@@ -594,7 +871,7 @@ function Leaderboard({me,title}){
   return (
     <div className="bg-white rounded-2xl border border-slate-200 p-4">
       <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
-        <div className="font-semibold">{title || "🏆 Leaderboard"}</div>
+        <div className="font-semibold flex items-center gap-2">{title || "🏆 Leaderboard"}{title && <SoundToggle/>}</div>
         <div className="flex gap-1 bg-slate-100 rounded-full p-1 text-xs">
           {[["today","Today"],["week","7 days"],["month","This month"]].map(function(r){ return <button key={r[0]} onClick={()=>setRange(r[0])} className={"px-3 py-1 rounded-full "+(range===r[0]?"bg-white shadow font-medium":"text-slate-600")}>{r[1]}</button>; })}
         </div>

@@ -82,7 +82,7 @@ const APPS_URL = "https://script.google.com/macros/s/AKfycbw6_2z2rT-U2mmpFhRl8hy
 
 const OUTCOMES = [
   "Not Answering","Owner Not Available","Interested","Website Sent","Not Interested",
-  "Meeting Booked","Schedule Follow-up","Landed","No Show","Dumped"
+  "Meeting Booked","Schedule Follow-up","Call Back","Landed","No Show","Dumped"
 ];
 // Statuses that still need work — shown in the daily queue. Ordered New-first
 // (untouched leads at the top so interns don't scroll past yesterday's calls).
@@ -90,7 +90,14 @@ const FRESH_STATUSES = ["New","Not Answering","Schedule Follow-up","Owner Not Av
 const STATUS_RANK = { "new":0, "not answering":1, "schedule follow-up":2, "owner not available":3, "interested":4, "website sent":5 };
 // Statuses that mean a meeting/follow-up is CLOSED (out of the pending pipeline)
 const CLOSED_STATUSES = ["Landed","No Show","Not Interested","Dumped"];
-const CONVO_OUTCOMES = ["Interested","Not Interested","Website Sent","Landed"];
+const CONVO_OUTCOMES = ["Interested","Not Interested","Website Sent","Landed","Call Back"];
+// Callbacks keep their (optional) time in the follow-up date/time columns, so the backend's
+// follow-up reminder email also fires for them. They stay out of the follow-up pipeline.
+function callbackAt(l){ return /^call back$/i.test(String(l.Status||"").trim()) ? leadDateTime(l["Followup Date"], l["Followup Time"]) : null; }
+function isCallback(l){ return /^call back$/i.test(String(l.Status||"").trim()); }
+function cbWhen(at){ if(!at) return "no time set"; const today=at.toDateString()===new Date().toDateString(); const tm=new Date(); tm.setDate(tm.getDate()+1);
+  return (today?"Today":(at.toDateString()===tm.toDateString()?"Tomorrow":at.toLocaleDateString([], {weekday:"short", day:"numeric", month:"short"})))+" "+waClock(at); }
+function nextHourTime(){ const d=new Date(Date.now()+60*60000); return pad2(d.getHours())+":00"; }
 // Outcomes that DON'T count as a conversation (dialed but didn't really speak).
 const NON_CONVO = ["Not Answering","Owner Not Available","Dr Not Available"];
 
@@ -3672,7 +3679,8 @@ function StatusBadge({status}){
     :/Website Sent/i.test(s)?"bg-cyan-100 text-cyan-700"
     :/Interested/i.test(s)&&!/Not/i.test(s)?"bg-blue-100 text-blue-700"
     :/Dumped|Not Interested/i.test(s)?"bg-slate-200 text-slate-500"
-    :/Follow/i.test(s)?"bg-amber-100 text-amber-700":"bg-slate-100 text-slate-600";
+    :/Follow/i.test(s)?"bg-amber-100 text-amber-700"
+    :/Call Back/i.test(s)?"bg-violet-100 text-violet-700":"bg-slate-100 text-slate-600";
   return <span className={"px-2 py-0.5 rounded-full text-xs "+color}>{s}</span>;
 }
 
@@ -4181,7 +4189,7 @@ function isFresh(l){
   return inSet && String(l["Last Follow-up Date"]||"").indexOf(todayISO())<0;
 }
 
-const STATUS_DOT={"New":"#94a3b8","Not Answering":"#f97316","Owner Not Available":"#fb923c","Interested":"#3b82f6","Website Sent":"#06b6d4","Schedule Follow-up":"#f59e0b","Meeting Booked":"#22c55e","No Show":"#ef4444","Not Interested":"#64748b","Dumped":"#334155"};
+const STATUS_DOT={"Call Back":"#8b5cf6","New":"#94a3b8","Not Answering":"#f97316","Owner Not Available":"#fb923c","Interested":"#3b82f6","Website Sent":"#06b6d4","Schedule Follow-up":"#f59e0b","Meeting Booked":"#22c55e","No Show":"#ef4444","Not Interested":"#64748b","Dumped":"#334155"};
 function InternFilters({mine,sel,toggleChip,fday,setFday,sortBy,setSortBy}){
   const cs=function(name){ return mine.filter(function(l){ return statusOf(l).toLowerCase()===name.toLowerCase(); }).length; };
   const chips=[
@@ -4192,6 +4200,7 @@ function InternFilters({mine,sel,toggleChip,fday,setFday,sortBy,setSortBy}){
     ["Interested","Interested", cs("Interested")],
     ["Website Sent","🌐 Website", cs("Website Sent")],
     ["Schedule Follow-up","Follow-up", cs("Schedule Follow-up")],
+    ["Call Back","📞 Callbacks", cs("Call Back")],
     ["Meeting Booked","Meeting", cs("Meeting Booked")],
     ["No Show","No show", cs("No Show")],
     ["Not Interested","Not int.", cs("Not Interested")],
@@ -4288,6 +4297,7 @@ function InternView({user,leads,stats,refresh,notify,actor}){
   function toggleChip(tok){
     setFday("");
     if(tok==="fresh"||tok==="all"){ setSel([tok]); return; }
+    if(tok==="Call Back"){ setSel(function(cur){ return (cur.length===1&&cur[0]==="Call Back") ? ["fresh"] : ["Call Back"]; }); return; }
     setSel(function(cur){
       let base=cur.filter(function(x){ return x!=="fresh"&&x!=="all"; });
       base = base.indexOf(tok)>=0 ? base.filter(function(x){ return x!==tok; }) : base.concat([tok]);
@@ -4304,7 +4314,14 @@ function InternView({user,leads,stats,refresh,notify,actor}){
   },[mineCat,sel,fday]);
 
   const [sortBy,setSortBy]=useState("smart");   // ✨ New-first daily order by default
-  const sorted=useMemo(function(){ return sortLeads(filtered, sortBy); },[filtered,sortBy]);
+  const onlyCallbacks = !fday && sel.length===1 && sel[0]==="Call Back";
+  const sorted=useMemo(function(){
+    if(!onlyCallbacks) return sortLeads(filtered, sortBy);
+    // Callbacks: earliest time first, the ones without a time after them.
+    return filtered.slice().sort(function(a,b){ const x=callbackAt(a), y=callbackAt(b); if(x&&y) return x-y; if(x) return -1; if(y) return 1; return 0; });
+  },[filtered,sortBy,onlyCallbacks]);
+  const cbList=useMemo(function(){ return mineCat.filter(isCallback); },[mineCat]);
+  const cbDue=cbList.filter(function(l){ const at=callbackAt(l); return at && at.getTime()<=Date.now(); }).length;
 
   const [idx,setIdx]=useState(0);
   useEffect(()=>{ setIdx(0); },[sel,fday,mode,sortBy,cat,city,gradeSel]);
@@ -4375,6 +4392,10 @@ function InternView({user,leads,stats,refresh,notify,actor}){
               className={"px-2.5 py-1 rounded-full text-xs border "+(on?"bg-slate-700 text-white border-slate-700":"bg-slate-50 text-slate-600 border-slate-300")}>No grade ({c})</button>; })()}
           {gradeSel.length>0 && <button onClick={()=>setGradeSel([])} className="text-xs text-slate-500 underline">clear</button>}
         </div>}
+      {(mode==="call"||mode==="list") && cbList.length>0 && !onlyCallbacks &&
+        <button onClick={()=>toggleChip("Call Back")} className="w-full flex items-center justify-between gap-2 rounded-2xl px-4 py-2.5 bg-violet-50 border border-violet-200 text-sm text-violet-800 hover:bg-violet-100">
+          <span>📞 <b>{cbList.length}</b> callback{cbList.length>1?"s":""} waiting{cbDue?(" · "+cbDue+" due now"):""}</span><span className="font-semibold">Open callbacks →</span>
+        </button>}
       {mode!=="close" && mode!=="board" && mode!=="stats" && <InternFilters mine={mineCat} sel={sel} toggleChip={toggleChip} fday={fday} setFday={setFday} sortBy={sortBy} setSortBy={setSortBy}/>}
       {mode==="stats"
         ? <Analytics me={user} names={(_gameTeam||[]).filter(function(i){ return i && i.name && !i.muted; }).map(function(i){ return i.name; })}/>
@@ -4387,7 +4408,9 @@ function InternView({user,leads,stats,refresh,notify,actor}){
         : mode==="close"
           ? <MeetingsPipeline leads={mineCat} refresh={refresh} notify={notify}/>
           : (sorted.length===0
-              ? <div className="bg-white rounded-2xl border p-8 text-center text-slate-500">{emptyMsg}</div>
+              ? <div className="bg-white rounded-2xl border p-8 text-center text-slate-500">{emptyMsg}
+                  {sel.indexOf("fresh")>=0 && cbList.length>0 && <div className="mt-4"><button onClick={()=>toggleChip("Call Back")} className="px-5 py-3 rounded-2xl bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white font-semibold shadow-lg">📞 Start callbacks ({cbList.length})</button></div>}
+                </div>
               : <CallCard key={active.ID} lead={active} user={user} actor={actor} position={safeIdx+1} total={sorted.length}
                   onPrev={()=>setIdx(Math.max(0,safeIdx-1))} onNext={()=>setAdvFrom(active.ID)}
                   onSaved={refresh} notify={notify}/>)}
@@ -4454,6 +4477,7 @@ function InternListItem({l,refresh,notify,onEdit,actor,user}){
             {l.Reviews && <span className="text-slate-500 font-medium">· 💬 {l.Reviews}</span>}
             {l.Rating && <span>· ★ {l.Rating}</span>}
             <StatusBadge status={l.Status}/>
+            {isCallback(l) && <span className="text-violet-700 font-semibold">⏰ {cbWhen(callbackAt(l))}</span>}
             <FolderBadge lead={l}/>
           </div>
         </div>
@@ -4570,6 +4594,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
   const [saving,setSaving]=useState(false);
   const [picker,setPicker]=useState(null);
   const [dt,setDt]=useState({date:todayISO(),time:"11:00"});
+  const [cb,setCb]=useState({on:false, date:todayISO(), time:nextHourTime()});   // callback time is optional
 
   const wa=waNumber(lead.Phone);
   const waMsg=encodeURIComponent(waDetailsMsg(lead));
@@ -4584,6 +4609,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
     const patch={ID:lead.ID};
     const effOutcome = opts.outcome!==undefined ? opts.outcome : outcome;
     if(effOutcome) patch.Status=effOutcome;
+    if(effOutcome==="Call Back"){ patch["Followup Date"]=cb.on?cb.date:""; patch["Followup Time"]=cb.on?cb.time:""; patch["Followup Sent"]=""; }
     let noteText=note.trim();
     if(effOutcome==="Landed" && !opts.noStat){ const amt=askAmount("🏆 Client landed! Deal value in ₹ (optional):"); if(amt) noteText="💰 Landed "+inr(amt)+(noteText?(" — "+noteText):""); }
     if(noteText){ const entry="["+nowStamp()+" · "+(actor||user)+"] "+noteText;
@@ -4607,7 +4633,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
     else if(picker==="followup") save({Status:"Schedule Follow-up","Followup Date":dt.date,"Followup Time":dt.time},{outcome:"Schedule Follow-up"});
     setPicker(null);
   }
-  function onOutcomeChange(v){ setOutcome(v); if(v==="Meeting Booked") setPicker("meeting"); else if(v==="Schedule Follow-up") setPicker("followup"); }
+  function onOutcomeChange(v){ setOutcome(v); if(v==="Meeting Booked") setPicker("meeting"); else if(v==="Schedule Follow-up") setPicker("followup"); else setPicker(null); }
   // Meeting WhatsApp button: already booked -> send the confirmation; not yet -> pick the time first.
   function waMeetingClick(){
     if(booked && waMeet){ window.open(waLink(lead.Phone,waMeet),"_blank"); return; }
@@ -4625,7 +4651,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
   keyRef.current={onOutcomeChange:onOutcomeChange, save:save, onNext:onNext, onPrev:onPrev, outcome:outcome, note:note, picker:picker, confirmPicker:confirmPicker, setPicker:setPicker, setOutcome:setOutcome, wa:wa, waMsg:waMsg};
   const [keyFlash,setKeyFlash]=useState("");
   useEffect(function(){
-    const map={"1":"Not Answering","2":"Owner Not Available","3":"Interested","4":"Not Interested","5":"Schedule Follow-up","6":"Meeting Booked","7":"Dumped"};
+    const map={"1":"Not Answering","2":"Owner Not Available","3":"Interested","4":"Not Interested","5":"Schedule Follow-up","6":"Meeting Booked","7":"Dumped","8":"Call Back"};
     function onKey(e){
       if(e.ctrlKey||e.metaKey||e.altKey) return;
       const t=e.target, tag=(t&&t.tagName)||"";
@@ -4666,6 +4692,8 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
         <div className="text-sm text-slate-500">
           {lead["Conflict Flag"]==="true" && <span className="text-red-500">⚠ slot conflict</span>}
         </div>
+        {isCallback(lead) && (function(){ const at=callbackAt(lead); const due=at && at.getTime()<=Date.now();
+          return <div className={"inline-flex items-center gap-1.5 mt-1.5 px-2.5 py-1 rounded-full text-xs font-semibold "+(due?"bg-red-100 text-red-700":"bg-violet-100 text-violet-700")}>📞 Call back · {cbWhen(at)}{due?" · due now":""}</div>; })()}
         </div>
       </div>
       </div>
@@ -4716,6 +4744,18 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
         </div>
         <select value={outcome} onChange={e=>onOutcomeChange(e.target.value)} className={"w-full border rounded-xl px-3 py-2 "+(outcome?"border-indigo-400 ring-2 ring-indigo-100 font-semibold":"")}>
           <option value="">— Select outcome —</option>{OUTCOMES.map(o=><option key={o}>{o}</option>)}</select>
+        {outcome==="Call Back" &&
+          <div className="rounded-xl bg-violet-50 border border-violet-100 p-3 flex items-center gap-2 flex-wrap game-fade">
+            <span className="text-sm font-semibold text-violet-800">📞 Call back</span>
+            {!cb.on
+              ? <button onClick={()=>setCb({...cb,on:true})} className="px-3 py-1.5 rounded-lg bg-white border border-violet-200 text-sm text-violet-700">＋ Add date & time</button>
+              : <React.Fragment>
+                  <input type="date" value={cb.date} onChange={e=>setCb({...cb,date:e.target.value})} className="border rounded-lg px-2 py-1 text-sm"/>
+                  <input type="time" value={cb.time} onChange={e=>setCb({...cb,time:e.target.value})} className="border rounded-lg px-2 py-1 text-sm"/>
+                  <button onClick={()=>setCb({...cb,on:false})} className="text-xs text-slate-500 underline">remove time</button>
+                </React.Fragment>}
+            <span className="text-[11px] text-violet-600 w-full">{cb.on?"You'll get a reminder email at this time.":"Time is optional. Save as is, or add one for a reminder."}</span>
+          </div>}
         <textarea ref={noteRef} value={note} onChange={e=>setNote(e.target.value)} rows={2} placeholder="Add a note (appended, never overwrites)…" className="w-full border rounded-xl px-3 py-2 text-sm"/>
       </div>
 
@@ -4736,7 +4776,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
       <button onClick={()=>save()} disabled={saving||(!outcome&&!note.trim())} className="w-full py-3 rounded-xl bg-indigo-600 text-white font-semibold disabled:opacity-40">
         {saving?"Saving…":"Save & Next →"}</button>
       {keyFlash && <div className="text-center text-xs font-semibold text-indigo-600 game-fade">⌨ {keyFlash}, press Enter to save</div>}
-      <div className="hidden sm:block text-[11px] text-slate-400 text-center leading-relaxed">⌨ <b>1</b> No answer · <b>2</b> Owner N/A · <b>3</b> Interested · <b>4</b> Not int. · <b>5</b> Follow-up · <b>6</b> Meeting · <b>7</b> Dumped · <b>Enter</b> save · <b>N</b> note · <b>W</b> WhatsApp · <b>← →</b> move</div>
+      <div className="hidden sm:block text-[11px] text-slate-400 text-center leading-relaxed">⌨ <b>1</b> No answer · <b>2</b> Owner N/A · <b>3</b> Interested · <b>4</b> Not int. · <b>5</b> Follow-up · <b>6</b> Meeting · <b>7</b> Dumped · <b>8</b> Call back · <b>Enter</b> save · <b>N</b> note · <b>W</b> WhatsApp · <b>← →</b> move</div>
     </div>
   );
 }

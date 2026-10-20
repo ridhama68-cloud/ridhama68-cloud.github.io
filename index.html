@@ -197,6 +197,7 @@ function saveInBackground(payload){
   payload.opId = payload.opId || newOpId();
   _localPatch(payload);
   if(payload.logStat && payload.logStat.outcome) gameBump(payload.logStat.intern, payload.logStat.outcome, payload.opId);
+  if(payload.logStat && payload.logStat.outcome && payload.logStat.dial!==false) logCallEvent(payload.logStat.intern, payload.logStat.outcome, payload.opId);
   _outbox.push(payload); _outboxStuck=false; _outboxNotify();
   flushOutbox();
 }
@@ -1271,6 +1272,226 @@ function TVMode(){
   );
 }
 
+
+/* ============ CALL-TIME LOG (for analytics): every saved call is stamped with its time ============ */
+// Kept in the Cloudflare Worker per day. Queued on this device until the Worker accepts it.
+const EV_Q="reactivify.evq";
+let _evBusy=false;
+function logCallEvent(intern,outcome,id){
+  if(!intern || !outcome) return;
+  let q=[]; try{ q=JSON.parse(localStorage.getItem(EV_Q)||"[]"); }catch(x){}
+  q.push({d:todayISO(), t:Date.now(), i:intern, o:outcome, id:id||newOpId()});
+  try{ localStorage.setItem(EV_Q, JSON.stringify(q.slice(-800))); }catch(x){}
+  flushEvents();
+}
+function flushEvents(){
+  if(_evBusy) return;
+  let q=[]; try{ q=JSON.parse(localStorage.getItem(EV_Q)||"[]"); }catch(x){}
+  if(!q.length) return;
+  _evBusy=true;
+  fetch(API_URL+"/events",{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({events:q})})
+    .then(function(r){ return r.json(); })
+    .then(function(r){
+      if(r && r.ok && typeof r.added==="number"){
+        const sent=new Set(q.map(function(e){ return e.id; }));
+        let cur=[]; try{ cur=JSON.parse(localStorage.getItem(EV_Q)||"[]"); }catch(x){}
+        try{ localStorage.setItem(EV_Q, JSON.stringify(cur.filter(function(e){ return !sent.has(e.id); }))); }catch(x){}
+      }
+    }).catch(function(){}).then(function(){ _evBusy=false; });
+}
+setInterval(flushEvents, 60000);
+setTimeout(flushEvents, 4000);
+
+/* ============ ANALYTICS ============ */
+const WD=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const WD_FULL=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const AN_HOURS=[8,9,10,11,12,13,14,15,16,17,18,19,20];
+function hourLabel(h){ const ap=h>=12?"PM":"AM"; return (h%12||12)+" "+ap; }
+function pct(a,b){ return b>0 ? Math.round(a/b*100) : 0; }
+function isConnect(o){ return !/^(not answering|dumped)$/i.test(String(o||"").trim()); }
+function useCallEvents(from,to){
+  const [st,setSt]=useState({loading:true, days:{}, ok:false});
+  useEffect(function(){
+    let dead=false;
+    setSt(function(s){ return Object.assign({},s,{loading:true}); });
+    fetch(API_URL+"/events?from="+from+"&to="+to).then(function(r){ return r.json(); }).then(function(r){
+      if(dead) return;
+      setSt({loading:false, days:(r && r.ok && r.days && !Array.isArray(r.leads)) ? r.days : {}, ok:!!(r && r.ok && r.days)});
+    }).catch(function(){ if(!dead) setSt({loading:false, days:{}, ok:false}); });
+    return function(){ dead=true; };
+  },[from,to]);
+  return st;
+}
+function Analytics({me,names,isAdmin}){
+  const daily=useGame();
+  const people=useMemo(function(){
+    const set={}; (names||[]).forEach(function(n){ if(n && n!=="Team") set[n]=1; });
+    if(daily) Object.keys(daily).forEach(function(d){ Object.keys(daily[d]||{}).forEach(function(n){ if(n!=="Team" && !(names&&names.length)) set[n]=1; }); });
+    return Object.keys(set).sort();
+  },[daily,names]);
+  const [who,setWho]=useState(isAdmin ? "__all" : (me||"__all"));
+  const [range,setRange]=useState("90");
+  const today=todayISO();
+  const fromIso=useMemo(function(){ if(range==="all") return "2026-01-01"; const d=new Date(); d.setDate(d.getDate()-Number(range)+1); return gIso(d); },[range]);
+  const ev=useCallEvents(fromIso,today);
+  const match=function(n){ return who==="__all" ? (people.indexOf(n)>=0 || !people.length) : String(n).toLowerCase()===String(who).toLowerCase(); };
+
+  // ---- day-of-week + trend from the daily call log (history available) ----
+  const dayStats=useMemo(function(){
+    const wd=WD.map(function(){ return {days:0, dials:0, convos:0, meet:0, web:0}; });
+    const trend=[]; const tot={days:0, dials:0, convos:0, meet:0, web:0};
+    Object.keys(daily||{}).sort().forEach(function(d){
+      if(d<fromIso || d>today) return;
+      let s=gZero();
+      Object.keys(daily[d]||{}).forEach(function(n){ if(n!=="Team" && match(n)) s=gAdd(s, gRecStats(daily[d][n])); });
+      trend.push({d:d, s:s});
+      if(s.dials<=0) return;
+      const w=wd[new Date(d+"T00:00:00").getDay()];
+      w.days++; w.dials+=s.dials; w.convos+=s.convos; w.meet+=s.meet; w.web+=s.web;
+      tot.days++; tot.dials+=s.dials; tot.convos+=s.convos; tot.meet+=s.meet; tot.web+=s.web;
+    });
+    return {wd:wd, trend:trend, tot:tot};
+  },[daily,fromIso,who,people.join(",")]);
+
+  // ---- hour of day + heatmap from the call-time log (builds up from now on) ----
+  const hourStats=useMemo(function(){
+    const hours={}; AN_HOURS.forEach(function(h){ hours[h]={calls:0, conn:0, meet:0}; });
+    const grid={}; let n=0, first=null;
+    Object.keys(ev.days||{}).forEach(function(d){
+      (ev.days[d]||[]).forEach(function(e){
+        if(!match(e[1])) return;
+        const t=new Date(e[0]); const h=t.getHours(), w=t.getDay();
+        n++; if(!first || t<first) first=t;
+        const hk=Math.max(AN_HOURS[0], Math.min(AN_HOURS[AN_HOURS.length-1], h));
+        const c=isConnect(e[2]), m=/meeting booked/i.test(e[2]);
+        hours[hk].calls++; if(c) hours[hk].conn++; if(m) hours[hk].meet++;
+        const g=grid[w+"_"+hk]=grid[w+"_"+hk]||{calls:0,conn:0};
+        g.calls++; if(c) g.conn++;
+      });
+    });
+    return {hours:hours, grid:grid, n:n, first:first};
+  },[ev.days,who,people.join(",")]);
+
+  const MIN_SLOT=15;
+  const wdRank=dayStats.wd.map(function(w,i){ return {i:i, w:w, rate:pct(w.convos,w.dials)}; }).filter(function(x){ return x.w.dials>=40; });
+  const bestDay=wdRank.slice().sort(function(a,b){ return b.rate-a.rate; })[0];
+  const busiestDay=dayStats.wd.map(function(w,i){ return {i:i, avg:w.days?w.dials/w.days:0}; }).sort(function(a,b){ return b.avg-a.avg; })[0];
+  const hrRank=AN_HOURS.map(function(h){ const x=hourStats.hours[h]; return {h:h, x:x, rate:pct(x.conn,x.calls)}; }).filter(function(o){ return o.x.calls>=MIN_SLOT; });
+  const bestHour=hrRank.slice().sort(function(a,b){ return b.rate-a.rate; })[0];
+  const worstHour=hrRank.slice().sort(function(a,b){ return a.rate-b.rate; })[0];
+  const T=dayStats.tot;
+  const maxAvg=Math.max(1,...dayStats.wd.map(function(w){ return w.days?w.dials/w.days:0; }));
+  const maxHourCalls=Math.max(1,...AN_HOURS.map(function(h){ return hourStats.hours[h].calls; }));
+  const trend=dayStats.trend.slice(-45);
+  const maxTrend=Math.max(1,...trend.map(function(t){ return t.s.dials; }));
+  const target=500;
+
+  const kpi=function(big,label,tone){ return <div className={"rounded-2xl px-4 py-3 "+(tone||"bg-white border border-slate-200")}><div className="text-2xl font-extrabold tabular-nums text-slate-900">{big}</div><div className="text-[11px] text-slate-500">{label}</div></div>; };
+  const card=function(title,sub,body){ return <div className="bg-white rounded-2xl border border-slate-200 p-4"><div className="flex items-baseline justify-between gap-2 mb-3 flex-wrap"><div className="font-semibold">{title}</div>{sub && <div className="text-[11px] text-slate-400">{sub}</div>}</div>{body}</div>; };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-3xl p-5 text-white shadow-xl bg-gradient-to-br from-sky-500 via-indigo-600 to-violet-600 relative overflow-hidden">
+        <div className="absolute -right-10 -top-12 w-48 h-48 rounded-full bg-white/10" style={{filter:"blur(26px)"}}/>
+        <div className="relative flex items-center justify-between gap-3 flex-wrap">
+          <div><div className="text-[11px] uppercase tracking-widest opacity-80">Analytics</div><div className="text-2xl font-extrabold">📈 When do calls work best?</div></div>
+          <div className="flex gap-2 flex-wrap">
+            <select value={who} onChange={e=>setWho(e.target.value)} className="rounded-xl px-3 py-2 text-sm text-slate-800 bg-white/95 border-0">
+              <option value="__all">👥 Everyone</option>
+              {people.map(function(n){ return <option key={n} value={n}>{n}{me&&n.toLowerCase()===String(me).toLowerCase()?" (you)":""}</option>; })}
+            </select>
+            <div className="flex gap-1 bg-white/15 rounded-xl p-1 text-sm">
+              {[["30","30 days"],["90","90 days"],["all","All time"]].map(function(r){ return <button key={r[0]} onClick={()=>setRange(r[0])} className={"px-3 py-1 rounded-lg "+(range===r[0]?"bg-white text-indigo-700 font-semibold":"text-white/90")}>{r[1]}</button>; })}
+            </div>
+          </div>
+        </div>
+        <div className="relative grid grid-cols-2 sm:grid-cols-5 gap-2 mt-4">
+          {[[T.dials,"dials"],[T.convos,"conversations"],[pct(T.convos,T.dials)+"%","pick-up rate"],[T.meet,"meetings"],[(T.dials?(T.meet/T.dials*100).toFixed(1):"0")+"","meetings per 100 dials"]].map(function(k){ return <div key={k[1]} className="bg-white/15 rounded-2xl px-3 py-2"><div className="text-xl font-extrabold tabular-nums">{k[0]}</div><div className="text-[11px] opacity-85">{k[1]}</div></div>; })}
+        </div>
+      </div>
+
+      {card("💡 Insights", null,
+        <div className="grid sm:grid-cols-2 gap-2 text-sm">
+          <div className="rounded-xl bg-emerald-50 border border-emerald-100 px-3 py-2">{bestDay ? <span>Best day: <b>{WD_FULL[bestDay.i]}</b>, {bestDay.rate}% of dials turn into a conversation.</span> : <span className="text-slate-500">Best day shows once each weekday has 40+ dials.</span>}</div>
+          <div className="rounded-xl bg-indigo-50 border border-indigo-100 px-3 py-2">{busiestDay && busiestDay.avg>0 ? <span>Busiest day: <b>{WD_FULL[busiestDay.i]}</b>, {Math.round(busiestDay.avg)} dials on average.</span> : <span className="text-slate-500">No dials in this range yet.</span>}</div>
+          <div className="rounded-xl bg-amber-50 border border-amber-100 px-3 py-2">{bestHour ? <span>Best hour: <b>{hourLabel(bestHour.h)}–{hourLabel(bestHour.h+1)}</b>, {bestHour.rate}% pick up.</span> : <span className="text-slate-500">Best hour shows once an hour has {MIN_SLOT}+ timed calls.</span>}</div>
+          <div className="rounded-xl bg-rose-50 border border-rose-100 px-3 py-2">{worstHour && bestHour && worstHour.h!==bestHour.h ? <span>Weakest hour: <b>{hourLabel(worstHour.h)}</b>, only {worstHour.rate}% pick up. Use it for WhatsApp follow-ups.</span> : <span className="text-slate-500">Weakest hour shows with more timed calls.</span>}</div>
+        </div>)}
+
+      {card("📅 By day of the week", "bar = average dials per working day · % = pick-up rate · 📅 = meetings",
+        <div className="grid grid-cols-7 gap-2 items-end h-44">
+          {dayStats.wd.map(function(w,i){ const avg=w.days?w.dials/w.days:0; const best=bestDay&&bestDay.i===i;
+            return (
+              <div key={i} className="flex flex-col items-center justify-end h-full gap-1" title={WD_FULL[i]+": "+w.days+" days, "+w.dials+" dials, "+w.convos+" conversations, "+w.meet+" meetings"}>
+                <div className={"text-[11px] font-bold "+(best?"text-emerald-600":"text-slate-600")}>{w.dials?pct(w.convos,w.dials)+"%":"–"}</div>
+                <div className={"w-full rounded-t-xl game-bar "+(best?"bg-gradient-to-t from-emerald-500 to-teal-400":"bg-gradient-to-t from-indigo-500 to-violet-400")} style={{height:Math.max(4,avg/maxAvg*100)+"px", minHeight:4}}/>
+                <div className="text-[11px] text-slate-500 tabular-nums">{Math.round(avg)}{w.meet?(" · 📅"+w.meet):""}</div>
+                <div className={"text-xs font-semibold "+(best?"text-emerald-700":"text-slate-700")}>{WD[i]}</div>
+              </div>
+            ); })}
+        </div>)}
+
+      {card("⏰ By hour of the day", hourStats.n+" timed calls"+(hourStats.first?(" since "+hourStats.first.toLocaleDateString([], {day:"numeric", month:"short"})):""),
+        <div>
+          {hourStats.n<target && <div className="mb-3">
+            <div className="flex justify-between text-[11px] text-slate-500 mb-1"><span>Collecting call times… the hour charts get reliable around {target} calls</span><span className="tabular-nums">{hourStats.n}/{target}</span></div>
+            <div className="h-2 rounded-full bg-slate-100 overflow-hidden"><div className="h-full rounded-full bg-gradient-to-r from-sky-400 to-indigo-500 game-bar" style={{width:Math.min(100,hourStats.n/target*100)+"%"}}/></div>
+          </div>}
+          <div className="grid gap-1.5 items-end h-40" style={{gridTemplateColumns:"repeat("+AN_HOURS.length+", minmax(0,1fr))"}}>
+            {AN_HOURS.map(function(h){ const x=hourStats.hours[h]; const r=pct(x.conn,x.calls); const best=bestHour&&bestHour.h===h;
+              return (
+                <div key={h} className="flex flex-col items-center justify-end h-full gap-1" title={hourLabel(h)+": "+x.calls+" calls, "+x.conn+" picked up, "+x.meet+" meetings"}>
+                  <div className={"text-[10px] font-bold "+(best?"text-amber-600":"text-slate-500")}>{x.calls?r+"%":""}</div>
+                  <div className="w-full rounded-t-lg game-bar" style={{height:Math.max(3,x.calls/maxHourCalls*100)+"px", background:x.calls?("hsl("+Math.round(r*1.3)+",75%,"+(best?48:58)+"%)"):"#e2e8f0"}}/>
+                  <div className="text-[10px] text-slate-500 whitespace-nowrap">{hourLabel(h).replace(" ","")}</div>
+                </div>
+              ); })}
+          </div>
+          <div className="text-[11px] text-slate-400 mt-2">Bar height = number of calls · colour and % = pick-up rate (green is better). 8 AM includes earlier calls, 8 PM includes later ones.</div>
+        </div>)}
+
+      {card("🗓 Day × hour heatmap", "darker green = more people pick up · faded = few calls so far",
+        <div className="overflow-x-auto no-scrollbar">
+          <table className="text-[11px] border-separate" style={{borderSpacing:3}}>
+            <thead><tr><th></th>{AN_HOURS.map(function(h){ return <th key={h} className="font-medium text-slate-400 px-0.5">{hourLabel(h).replace(" ","")}</th>; })}</tr></thead>
+            <tbody>{[1,2,3,4,5,6,0].map(function(w){ return (
+              <tr key={w}><td className="pr-2 font-semibold text-slate-600">{WD[w]}</td>
+                {AN_HOURS.map(function(h){ const g=hourStats.grid[w+"_"+h]; const r=g?g.conn/g.calls:0; const conf=g?Math.min(1,0.25+g.calls/12):0;
+                  return <td key={h} title={WD_FULL[w]+" "+hourLabel(h)+(g?(": "+g.calls+" calls, "+pct(g.conn,g.calls)+"% picked up"):": no calls yet")}
+                    className="w-9 h-7 rounded-md text-center align-middle font-semibold"
+                    style={{background:g?("hsla("+Math.round(r*140)+",72%,46%,"+conf+")"):"#f1f5f9", color:g&&conf>0.55?"#fff":"#334155"}}>{g?pct(g.conn,g.calls):""}</td>; })}
+              </tr>); })}</tbody>
+          </table>
+        </div>)}
+
+      {card("📊 Daily trend", "last "+trend.length+" days · bar = dials · dark part = conversations",
+        <div className="flex items-end gap-[3px] h-32">
+          {trend.map(function(t){ const d=new Date(t.d+"T00:00:00"); const sun=d.getDay()===0;
+            return (
+              <div key={t.d} className="flex-1 flex flex-col justify-end h-full min-w-[4px]" title={t.d+" ("+WD[d.getDay()]+"): "+t.s.dials+" dials, "+t.s.convos+" conversations, "+t.s.meet+" meetings"}>
+                <div className={"w-full rounded-t flex flex-col justify-end overflow-hidden "+(sun?"bg-slate-200":"bg-indigo-200")} style={{height:(t.s.dials/maxTrend*100)+"%"}}>
+                  <div className="w-full rounded-t bg-indigo-600" style={{height:(t.s.dials?t.s.convos/t.s.dials*100:0)+"%"}}/>
+                </div>
+              </div>
+            ); })}
+        </div>)}
+
+      {who==="__all" && people.length>1 && card("👥 Person by person", "same date range",
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-[11px] uppercase text-slate-400"><th className="py-1">Name</th><th>Days</th><th>Dials</th><th>Avg/day</th><th>Pick-up</th><th>Meetings</th><th>Per 100</th></tr></thead>
+            <tbody>{people.map(function(n){
+              let s=gZero(), days=0;
+              Object.keys(daily||{}).forEach(function(d){ if(d<fromIso||d>today) return; const x=gRecStats(gRec(daily[d],n)); if(x.dials>0){ days++; s=gAdd(s,x); } });
+              if(!s.dials) return null;
+              return <tr key={n} className="border-t border-slate-100"><td className="py-1.5 font-semibold flex items-center gap-2"><Avatar name={n} size={22}/>{n}</td><td>{days}</td><td className="tabular-nums">{s.dials}</td><td className="tabular-nums">{Math.round(s.dials/days)}</td><td className="tabular-nums">{pct(s.convos,s.dials)}%</td><td className="tabular-nums">{s.meet}</td><td className="tabular-nums">{(s.meet/s.dials*100).toFixed(1)}</td></tr>;
+            })}</tbody>
+          </table>
+        </div>)}
+      {!ev.ok && !ev.loading && <div className="text-[11px] text-amber-600">Hour data isn't available yet: the Cloudflare Worker needs its update deployed. Day-of-week numbers above already work.</div>}
+    </div>
+  );
+}
 
 /* ============ OWNER DELETE (admin password once per tab) ============ */
 // The owner can delete from his own intern login too. Deleting is an admin-only write,
@@ -2704,7 +2925,7 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
     );
   }
 
-  const tabs=[["dashboard","📊 Dashboard"],["leads","📇 Leads"],["pipeline","✅ Pipeline"],["team","👥 Team"],["archive","🗄 Archive"],["bin","🗑 Bin"]];
+  const tabs=[["dashboard","📊 Dashboard"],["analytics","📈 Analytics"],["leads","📇 Leads"],["pipeline","✅ Pipeline"],["team","👥 Team"],["archive","🗄 Archive"],["bin","🗑 Bin"]];
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-4">
       <div className="flex gap-1 bg-white/80 border border-slate-200 shadow-sm rounded-full p-1 w-max max-w-full overflow-x-auto no-scrollbar">
@@ -2742,6 +2963,7 @@ function AdminView({leads,interns,stats,sessions,devices,refresh,notify}){
 
       {section==="archive" && <ArchiveSection leads={leads} refresh={refresh} notify={notify}/>}
       {section==="bin" && <ArchivePanel kind="bin" refresh={refresh} notify={notify}/>}
+      {section==="analytics" && <Analytics isAdmin={true} names={internNames}/>}
 
       {section==="leads" && <React.Fragment>
       <div className="bg-white rounded-2xl border border-slate-200 p-3 flex flex-wrap items-center gap-2">
@@ -4122,23 +4344,24 @@ function InternView({user,leads,stats,refresh,notify,actor}){
           <button onClick={()=>setMode("board")} className={"px-3 py-1 rounded-full text-sm whitespace-nowrap "+(mode==="board"?"bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md font-semibold":"text-slate-600")}>🧭 Board</button>
           <button onClick={()=>setMode("list")} className={"px-3 py-1 rounded-full text-sm whitespace-nowrap "+(mode==="list"?"bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md font-semibold":"text-slate-600")}>List</button>
           <button onClick={()=>setMode("phone")} className={"px-3 py-1 rounded-full text-sm whitespace-nowrap "+(mode==="phone"?"bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md font-semibold":"text-slate-600")}>📱 Phone</button>
+          <button onClick={()=>setMode("stats")} className={"px-3 py-1 rounded-full text-sm whitespace-nowrap "+(mode==="stats"?"bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md font-semibold":"text-slate-600")}>📈 Stats</button>
         </div>
       </div>
       <QuickSchedule leads={mine} user={user} refresh={refresh} notify={notify}/>
       <InternUpload user={user} refresh={refresh} notify={notify}/>
-      {categories.length>0 &&
+      {mode!=="stats" && categories.length>0 &&
         <div className="flex items-center gap-1.5 flex-wrap bg-white rounded-xl border border-slate-200 px-3 py-2">
           <span className="text-xs text-slate-400 mr-1">📁 Niche:</span>
           <button onClick={()=>setCat("All")} className={"px-2.5 py-1 rounded-full text-xs "+(cat==="All"?"bg-slate-900 text-white":"bg-slate-100 text-slate-600")}>All ({mine.length})</button>
           {categories.map(function(c){ return <button key={c[0]} onClick={()=>setCat(c[0])} className={"px-2.5 py-1 rounded-full text-xs "+(cat===c[0]?"bg-purple-600 text-white":"bg-purple-50 text-purple-700 border border-purple-200")}>{c[0]} ({c[1]})</button>; })}
         </div>}
-      {cities.length>0 &&
+      {mode!=="stats" && cities.length>0 &&
         <div className="flex items-center gap-1.5 flex-wrap bg-white rounded-xl border border-slate-200 px-3 py-2">
           <span className="text-xs text-slate-400 mr-1">📍 City:</span>
           <button onClick={()=>setCity("All")} className={"px-2.5 py-1 rounded-full text-xs "+(city==="All"?"bg-slate-900 text-white":"bg-slate-100 text-slate-600")}>All</button>
           {cities.map(function(c){ return <button key={c[0]} onClick={()=>setCity(c[0])} className={"px-2.5 py-1 rounded-full text-xs "+(city===c[0]?"bg-blue-600 text-white":"bg-blue-50 text-blue-700 border border-blue-200")}>{c[0]} ({c[1]})</button>; })}
         </div>}
-      {mine.some(function(l){ return gradeOf(l); }) &&
+      {mode!=="stats" && mine.some(function(l){ return gradeOf(l); }) &&
         <div className="flex items-center gap-1.5 flex-wrap bg-white rounded-xl border border-slate-200 px-3 py-2">
           <span className="text-xs text-slate-400 mr-1">Grade:</span>
           {GRADES.map(function(g){
@@ -4152,8 +4375,10 @@ function InternView({user,leads,stats,refresh,notify,actor}){
               className={"px-2.5 py-1 rounded-full text-xs border "+(on?"bg-slate-700 text-white border-slate-700":"bg-slate-50 text-slate-600 border-slate-300")}>No grade ({c})</button>; })()}
           {gradeSel.length>0 && <button onClick={()=>setGradeSel([])} className="text-xs text-slate-500 underline">clear</button>}
         </div>}
-      {mode!=="close" && mode!=="board" && <InternFilters mine={mineCat} sel={sel} toggleChip={toggleChip} fday={fday} setFday={setFday} sortBy={sortBy} setSortBy={setSortBy}/>}
-      {mode==="board"
+      {mode!=="close" && mode!=="board" && mode!=="stats" && <InternFilters mine={mineCat} sel={sel} toggleChip={toggleChip} fday={fday} setFday={setFday} sortBy={sortBy} setSortBy={setSortBy}/>}
+      {mode==="stats"
+        ? <Analytics me={user} names={(_gameTeam||[]).filter(function(i){ return i && i.name && !i.muted; }).map(function(i){ return i.name; })}/>
+        : mode==="board"
         ? <PipelineBoard leads={mine} refresh={refresh} notify={notify}/>
         : mode==="list"
         ? <InternList mine={sorted} refresh={refresh} notify={notify} actor={actor} user={user}/>

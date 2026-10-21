@@ -1055,7 +1055,7 @@ function MeetingSoon({leads,user,actor}){
             {x.l.Phone && <a href={waLink(x.l.Phone, reminderMsg(x.l, who))} target="_blank" rel="noopener"
               onClick={function(){ try{ localStorage.setItem(key,"1"); }catch(e){} setTimeout(function(){ setTick(function(t){ return t+1; }); },300); }}
               className={"px-3 py-2 rounded-xl text-sm font-semibold shadow "+(sent?"bg-white/25 text-white":"bg-white text-emerald-700")}>{sent?"✓ Reminder sent":"📲 Send reminder"}</a>}
-            {x.l.Phone && <a href={"tel:"+digits(x.l.Phone)} className="px-3 py-2 rounded-xl text-sm font-semibold bg-white/20">📞</a>}
+            {x.l.Phone && <a href={"tel:"+telOf(x.l.Phone)} className="px-3 py-2 rounded-xl text-sm font-semibold bg-white/20">📞</a>}
             {ms<20*60000 && <a href={MEET_LINK} target="_blank" rel="noopener" className="px-3 py-2 rounded-xl text-sm font-semibold bg-slate-900 text-white shadow">🎥 Join Meet</a>}
           </div>
         );
@@ -1769,6 +1769,8 @@ function WebsiteBadge({lead,className}){
   );
 }
 function digits(v){ return String(v||"").replace(/\D/g,""); }
+// Dial link: numbers longer than 10 digits carry a country code (US "1…", India "91…"), so dial them with "+".
+function telOf(v){ const d=digits(v); return d.length>10 ? "+"+d : d; }
 function waNumber(v){ const d=digits(v); return d.length===10?"91"+d:d; }
 const WA_DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 const WA_MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -2699,7 +2701,7 @@ function CloseItem({item,refresh,notify}){
       </div>
       {!resched
         ? <div className="flex flex-wrap gap-2 mt-1 items-center">
-            {l.Phone && <a href={"tel:"+digits(l.Phone)} className="px-2 py-1 rounded-lg bg-green-600 text-white text-xs">📞 Call</a>}
+            {l.Phone && <a href={"tel:"+telOf(l.Phone)} className="px-2 py-1 rounded-lg bg-green-600 text-white text-xs">📞 Call</a>}
             {item.type==="Meeting" && <button onClick={markShowup} disabled={busy||shown} className={"px-2 py-1 rounded-lg text-xs "+(shown?"bg-emerald-100 text-emerald-700":"bg-emerald-600 text-white")}>{shown?"✓ Showed up":"✅ Showed up"}</button>}
             <select disabled={busy} value="" onChange={e=>closeAs(e.target.value)} className="border rounded-lg px-2 py-1 text-sm">
               <option value="">Close as…</option>
@@ -4472,7 +4474,7 @@ function InternListItem({l,refresh,notify,onEdit,actor,user}){
         <div className="min-w-0">
           <div className="font-medium text-sm truncate">{l.Clinic||l.Name}</div>
           <div className="text-[11px] text-slate-400 flex items-center gap-1.5 flex-wrap">
-            <a href={"tel:"+digits(l.Phone)} className={"text-base font-bold tracking-wide "+((!l.Phone||String(l.Phone).trim()==="")?"text-red-400":"text-slate-800")}>{l.Phone||"— add number"}</a>
+            <a href={"tel:"+telOf(l.Phone)} className={"text-base font-bold tracking-wide "+((!l.Phone||String(l.Phone).trim()==="")?"text-red-400":"text-slate-800")}>{l.Phone||"— add number"}</a>
             {l.City && <span>· {l.City}</span>}
             {l.Reviews && <span className="text-slate-500 font-medium">· 💬 {l.Reviews}</span>}
             {l.Rating && <span>· ★ {l.Rating}</span>}
@@ -4482,7 +4484,7 @@ function InternListItem({l,refresh,notify,onEdit,actor,user}){
           </div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          {l.Phone && <a href={"tel:"+digits(l.Phone)} className="px-2 py-1 rounded-lg bg-green-50 text-green-700 text-xs">📞</a>}
+          {l.Phone && <a href={"tel:"+telOf(l.Phone)} className="px-2 py-1 rounded-lg bg-green-50 text-green-700 text-xs">📞</a>}
           {mu && <a href={mu} target="_blank" rel="noopener" className="px-2 py-1 rounded-lg bg-blue-50 text-blue-700 text-xs">📍 Map</a>}
           <button onClick={()=>onEdit(l)} className="px-2 py-1 rounded-lg text-slate-400 hover:text-indigo-600 text-sm">✎</button>
           {canDelete(user,actor) && <button onClick={()=>deleteToBin(l,user||l["Assigned To"]||"",actor,refresh,notify)} title="Delete (moves to the Recycle bin)" className="px-2 py-1 rounded-lg text-red-500 border border-red-200 text-xs hover:text-red-700">Delete</button>}
@@ -4569,9 +4571,9 @@ function PhoneCard({l}){
         </div>
         {l.Rating && <span className="text-xs text-amber-500 whitespace-nowrap">★ {l.Rating}</span>}
       </div>
-      <a href={hasPhone?("tel:"+digits(l.Phone)):undefined} className={"block mt-3 text-2xl font-extrabold tracking-wider text-center py-2 rounded-xl "+(hasPhone?"bg-green-50 text-green-700 active:bg-green-100":"bg-slate-50 text-slate-300")}>{l.Phone||"— no number"}</a>
+      <a href={hasPhone?("tel:"+telOf(l.Phone)):undefined} className={"block mt-3 text-2xl font-extrabold tracking-wider text-center py-2 rounded-xl "+(hasPhone?"bg-green-50 text-green-700 active:bg-green-100":"bg-slate-50 text-slate-300")}>{l.Phone||"— no number"}</a>
       <div className="grid grid-cols-2 gap-2 mt-2">
-        <a href={hasPhone?("tel:"+digits(l.Phone)):undefined} className={"text-center py-3 rounded-xl text-white font-semibold "+(hasPhone?"bg-green-600 active:bg-green-700":"bg-slate-300 pointer-events-none")}>📞 Call</a>
+        <a href={hasPhone?("tel:"+telOf(l.Phone)):undefined} className={"text-center py-3 rounded-xl text-white font-semibold "+(hasPhone?"bg-green-600 active:bg-green-700":"bg-slate-300 pointer-events-none")}>📞 Call</a>
         <a href={wa?("https://wa.me/"+wa+"?text="+waTextFor(l)):undefined} target="_blank" rel="noopener" className={"text-center py-3 rounded-xl text-white font-semibold "+(wa?"bg-emerald-500 active:bg-emerald-600":"bg-slate-300 pointer-events-none")}>💬 WhatsApp</a>
       </div>
       {WA_TEMPLATES.length>0 && wa && (
@@ -4698,7 +4700,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
       </div>
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <a href={"tel:"+digits(lead.Phone)} className="text-center py-3 rounded-xl bg-green-600 text-white font-semibold">📞 Call</a>
+        <a href={"tel:"+telOf(lead.Phone)} className="text-center py-3 rounded-xl bg-green-600 text-white font-semibold">📞 Call</a>
         <a href={"mailto:"+(lead.Email||"")} className="text-center py-3 rounded-xl bg-slate-600 text-white font-semibold">✉ Email</a>
       </div>
       <div className="grid grid-cols-2 gap-2">
@@ -4706,7 +4708,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
         <button onClick={waMeetingClick} className="py-3 rounded-xl bg-emerald-700 text-white font-semibold" title={booked&&waMeet?"Sends the meeting confirmation with the Google Meet link":"Pick the meeting time; WhatsApp opens when you confirm"}>📅 WhatsApp: meeting</button>
       </div>
       <div className="text-center">
-        <a href={"tel:"+digits(lead.Phone)} className="text-3xl font-black tracking-wider bg-gradient-to-r from-indigo-600 to-fuchsia-600 bg-clip-text text-transparent">{lead.Phone||"— no number"}</a>
+        <a href={"tel:"+telOf(lead.Phone)} className="text-3xl font-black tracking-wider bg-gradient-to-r from-indigo-600 to-fuchsia-600 bg-clip-text text-transparent">{lead.Phone||"— no number"}</a>
         {lead.Email && <div className="text-xs text-slate-400 mt-0.5">{lead.Email}</div>}
       </div>
       {mapsUrl(lead) && <a href={mapsUrl(lead)} target="_blank" rel="noopener" className="block text-center text-sm text-blue-600">📍 Open in Google Maps</a>}

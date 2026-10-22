@@ -1775,6 +1775,10 @@ function waNumber(v){ const d=digits(v); return d.length===10?"91"+d:d; }
 const WA_DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 const WA_MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 function waClock(at){ let h=at.getHours(); const ap=h>=12?"PM":"AM"; h=h%12||12; return h+":"+pad2(at.getMinutes())+" "+ap; }
+const WA_SAMPLE_LINKS="Samples & prices: reactivify.com/start\n"
+  +"The Portfolio: https://reactivify.com/samples/portfolio/\n"
+  +"The Studio: https://reactivify.com/samples/studio/\n"
+  +"The Signature: https://reactivify.com/samples/signature";
 // Message 1 - sent to people who ask "send me the details". Fills rating + reviews from the lead.
 function waDetailsMsg(l){
   const rev=String(l.Reviews||"").trim(), rat=String(l.Rating||"").trim();
@@ -1782,10 +1786,7 @@ function waDetailsMsg(l){
   return "Thanks for your time just now\n\n"
     +"We build websites only for interior designers. Your projects staged like a showroom, so serious clients trust you before they call.\n\n"
     +"\u2714 Live in 4 days, or it's free\n\u2714 Pay half to start, half once it's live\n\u2714 You own everything, no monthly fees\n\n"
-    +"Samples & prices: reactivify.com/start\n"
-    +"The Portfolio: https://reactivify.com/samples/portfolio/\n"
-    +"The Studio: https://reactivify.com/samples/studio/\n"
-    +"The Signature: https://reactivify.com/samples/signature\n\n"
+    +WA_SAMPLE_LINKS+"\n\n"
     +proof+" Can I show you what yours could look like? 15 min on Thursday or Friday?";
 }
 // Every meeting runs in the same Google Meet room.
@@ -1801,6 +1802,7 @@ function waMeetingMsg(l, who){
     +"\uD83D\uDCC5 "+WA_DAYS[at.getDay()]+", "+at.getDate()+" "+WA_MON[at.getMonth()]+" at "+waClock(at)+"\n"
     +(link?("\uD83D\uDCCD Google Meet: "+link+"\n"):"")
     +"\u23F1 15\u201320 minutes\n\n"
+    +"Have a look before we talk:\n"+WA_SAMPLE_LINKS+"\n\n"
     +"To make it useful, please keep ready:\n\u2022 3\u20134 of your best project photos (phone photos are fine)\n\u2022 Your Instagram handle\n\n"
     +"I'll show you a first look at your homepage on the call. See you then!\n"
     +"\u2014 "+(sender?(sender+", "):"")+"Reactivify";

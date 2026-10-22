@@ -81,13 +81,13 @@ const API_URL = "https://reactivifyapi.reactivify.workers.dev";
 const APPS_URL = "https://script.google.com/macros/s/AKfycbw6_2z2rT-U2mmpFhRl8hysSYnxLqmyArFfZHUU9EnkbirL6wc4QchUs5rcXho28aOZVQ/exec";
 
 const OUTCOMES = [
-  "Not Answering","Owner Not Available","Interested","Website Sent","Not Interested",
+  "Not Answering","Voicemail","Owner Not Available","Interested","Website Sent","Not Interested",
   "Meeting Booked","Schedule Follow-up","Call Back","Landed","No Show","Dumped"
 ];
 // Statuses that still need work — shown in the daily queue. Ordered New-first
 // (untouched leads at the top so interns don't scroll past yesterday's calls).
-const FRESH_STATUSES = ["New","Not Answering","Schedule Follow-up","Owner Not Available","Interested","Website Sent"];
-const STATUS_RANK = { "new":0, "not answering":1, "schedule follow-up":2, "owner not available":3, "interested":4, "website sent":5 };
+const FRESH_STATUSES = ["New","Not Answering","Voicemail","Schedule Follow-up","Owner Not Available","Interested","Website Sent"];
+const STATUS_RANK = { "new":0, "not answering":1, "voicemail":1, "schedule follow-up":2, "owner not available":3, "interested":4, "website sent":5 };
 // Statuses that mean a meeting/follow-up is CLOSED (out of the pending pipeline)
 const CLOSED_STATUSES = ["Landed","No Show","Not Interested","Dumped"];
 const CONVO_OUTCOMES = ["Interested","Not Interested","Website Sent","Landed","Call Back"];
@@ -99,7 +99,7 @@ function cbWhen(at){ if(!at) return "no time set"; const today=at.toDateString()
   return (today?"Today":(at.toDateString()===tm.toDateString()?"Tomorrow":at.toLocaleDateString([], {weekday:"short", day:"numeric", month:"short"})))+" "+waClock(at); }
 function nextHourTime(){ const d=new Date(Date.now()+60*60000); return pad2(d.getHours())+":00"; }
 // Outcomes that DON'T count as a conversation (dialed but didn't really speak).
-const NON_CONVO = ["Not Answering","Owner Not Available","Dr Not Available"];
+const NON_CONVO = ["Not Answering","Voicemail","Owner Not Available","Dr Not Available"];
 
 // Intern goes "idle" after this long with no activity (mouse/keys/touch/scroll).
 const IDLE_MS = 120000;   // 2 minutes
@@ -300,7 +300,7 @@ function gRecStats(rec){
   const n=function(k){ return (rec && rec[k]) || 0; };
   const showed=n("Showed Up");
   const dials=Math.max(0, ((rec && rec.calls) || 0) - n("Dumped") - showed);
-  const convos=Math.max(0, dials - n("Not Answering"));
+  const convos=Math.max(0, dials - n("Not Answering") - n("Voicemail"));
   const web=n("Website Sent"), meet=n("Meeting Booked"), landed=n("Landed");
   const points=dials*GAME_PTS.dial + convos*GAME_PTS.convo + web*GAME_PTS.web + meet*GAME_PTS.meet + showed*GAME_PTS.showed + landed*GAME_PTS.landed;
   return {dials:dials,convos:convos,web:web,meet:meet,showed:showed,landed:landed,noshow:n("No Show"),points:points};
@@ -1315,7 +1315,7 @@ const WD_FULL=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Satu
 const AN_HOURS=[8,9,10,11,12,13,14,15,16,17,18,19,20];
 function hourLabel(h){ const ap=h>=12?"PM":"AM"; return (h%12||12)+" "+ap; }
 function pct(a,b){ return b>0 ? Math.round(a/b*100) : 0; }
-function isConnect(o){ return !/^(not answering|dumped)$/i.test(String(o||"").trim()); }
+function isConnect(o){ return !/^(not answering|voicemail|dumped)$/i.test(String(o||"").trim()); }
 function useCallEvents(from,to){
   const [st,setSt]=useState({loading:true, days:{}, ok:false});
   useEffect(function(){
@@ -3294,7 +3294,7 @@ function FunnelDashboard({leads,internNames}){
         const n=function(k){ return rec[k]||0; };
         const showed=n("Showed Up");
         const dials=(rec.calls||0)-n("Dumped")-showed;
-        o["Dialed"]+=dials; o["Conversation"]+=dials-n("Not Answering");
+        o["Dialed"]+=dials; o["Conversation"]+=dials-n("Not Answering")-n("Voicemail");
         o["Website Sent"]+=n("Website Sent"); o["Meeting Booked"]+=n("Meeting Booked"); o["Showed up"]+=showed; o["Closed"]+=n("Landed");
       });
     });
@@ -3373,7 +3373,7 @@ function FunnelDashboard({leads,internNames}){
           </tbody>
         </table>
       </div>
-      <div className="text-[11px] text-slate-400">Dialed / Convos / Website / Booked / Showed up / Closed count every call logged in the range (redials included), from the same log as "Calls per day". Dumped is not a dial and Not Answering is not a conversation. The niche / city filter only narrows "Leads". The call log keeps the last 120 days.</div>
+      <div className="text-[11px] text-slate-400">Dialed / Convos / Website / Booked / Showed up / Closed count every call logged in the range (redials included), from the same log as "Calls per day". Dumped is not a dial; Not Answering and Voicemail are not conversations. The niche / city filter only narrows "Leads". The call log keeps the last 120 days.</div>
     </div>
   );
 }
@@ -4193,13 +4193,14 @@ function isFresh(l){
   return inSet && String(l["Last Follow-up Date"]||"").indexOf(todayISO())<0;
 }
 
-const STATUS_DOT={"Call Back":"#8b5cf6","New":"#94a3b8","Not Answering":"#f97316","Owner Not Available":"#fb923c","Interested":"#3b82f6","Website Sent":"#06b6d4","Schedule Follow-up":"#f59e0b","Meeting Booked":"#22c55e","No Show":"#ef4444","Not Interested":"#64748b","Dumped":"#334155"};
+const STATUS_DOT={"Call Back":"#8b5cf6","New":"#94a3b8","Not Answering":"#f97316","Voicemail":"#ec4899","Owner Not Available":"#fb923c","Interested":"#3b82f6","Website Sent":"#06b6d4","Schedule Follow-up":"#f59e0b","Meeting Booked":"#22c55e","No Show":"#ef4444","Not Interested":"#64748b","Dumped":"#334155"};
 function InternFilters({mine,sel,toggleChip,fday,setFday,sortBy,setSortBy}){
   const cs=function(name){ return mine.filter(function(l){ return statusOf(l).toLowerCase()===name.toLowerCase(); }).length; };
   const chips=[
     ["fresh","🔥 Fresh today", mine.filter(isFresh).length],
     ["New","New", cs("New")],
     ["Not Answering","No answer", cs("Not Answering")],
+    ["Voicemail","📭 Voicemail", cs("Voicemail")],
     ["Owner Not Available","Owner N/A", cs("Owner Not Available")],
     ["Interested","Interested", cs("Interested")],
     ["Website Sent","🌐 Website", cs("Website Sent")],
@@ -4655,7 +4656,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
   keyRef.current={onOutcomeChange:onOutcomeChange, save:save, onNext:onNext, onPrev:onPrev, outcome:outcome, note:note, picker:picker, confirmPicker:confirmPicker, setPicker:setPicker, setOutcome:setOutcome, wa:wa, waMsg:waMsg};
   const [keyFlash,setKeyFlash]=useState("");
   useEffect(function(){
-    const map={"1":"Not Answering","2":"Owner Not Available","3":"Interested","4":"Not Interested","5":"Schedule Follow-up","6":"Meeting Booked","7":"Dumped","8":"Call Back"};
+    const map={"1":"Not Answering","2":"Owner Not Available","3":"Interested","4":"Not Interested","5":"Schedule Follow-up","6":"Meeting Booked","7":"Dumped","8":"Call Back","9":"Voicemail"};
     function onKey(e){
       if(e.ctrlKey||e.metaKey||e.altKey) return;
       const t=e.target, tag=(t&&t.tagName)||"";

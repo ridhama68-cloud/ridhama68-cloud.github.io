@@ -1715,7 +1715,8 @@ function csvToLeads(text, cityOverride, folderOverride){
     "Internal Rating": m.grade!==undefined?gradeLetter(r[m.grade]):"",
     Website: m.website!==undefined?String(r[m.website]||"").trim():"",
     "Website Quality": m.webq!==undefined?String(r[m.webq]||"").trim():"",
-    Status:"New"
+    Status:"New",
+    Notes: (m.src!==undefined && /google\.[a-z.]+\/maps/i.test(String(r[m.src]||""))) ? ("Maps: "+String(r[m.src]).trim()) : ""
   })).filter(l=>l.Name||l.Phone);
 }
 // Small badge showing which "folder" / batch a lead belongs to (e.g. Bangalore),
@@ -1746,7 +1747,20 @@ function GradeBadge({lead,className}){
 // A Google Maps search for this lead -- built on the fly, so it works even for
 // leads imported before a Maps link was ever stored.
 function leadMapsQuery(lead){ return [lead.Clinic||lead.Name, lead.Folder, lead.City].filter(Boolean).join(" "); }
-function leadMapsUrl(lead){ return "https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(leadMapsQuery(lead)); }
+function leadMapsUrl(lead){ return exactMapsUrl(lead) || ("https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(leadMapsQuery(lead))); }
+// Small website + map icons, used in the list and phone views.
+function LinkIcons({lead}){
+  const site=String(lead.Website||"").trim();
+  const siteHref=site?(/^https?:\/\//i.test(site)?site:("http://"+site)):"";
+  const mu=mapsUrl(lead), exact=!!exactMapsUrl(lead);
+  const stop=function(e){ e.stopPropagation(); };
+  return (
+    <span className="inline-flex items-center gap-1">
+      {siteHref && <a href={siteHref} target="_blank" rel="noopener" onClick={stop} title={"Website: "+site} className="w-7 h-7 inline-flex items-center justify-center rounded-lg bg-sky-50 text-sm hover:bg-sky-100">🌐</a>}
+      {mu && <a href={mu} target="_blank" rel="noopener" onClick={stop} title={exact?"Open the exact place on Google Maps":"Exact place unknown, searches Google Maps"} className={"w-7 h-7 inline-flex items-center justify-center rounded-lg text-sm "+(exact?"bg-blue-50 hover:bg-blue-100":"bg-slate-100 opacity-60")}>📍</a>}
+    </span>
+  );
+}
 function MapsLink({lead,className}){
   return <a href={leadMapsUrl(lead)} target="_blank" rel="noreferrer" onClick={function(e){ e.stopPropagation(); }}
     className={className||"inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 hover:bg-blue-100"}>Maps</a>;
@@ -1861,14 +1875,28 @@ function fmtCountdown(ms){
 }
 function fmtWhen(d){ return d.toLocaleString("en-IN",{weekday:"short",day:"numeric",month:"short",hour:"numeric",minute:"2-digit"}); }
 
-// Google Maps search link for a clinic (by name + city, or phone as fallback).
+// Exact Google Maps place for each lead. maps.json (next to this page) maps lead ID -> Google place ID,
+// built from the scraper's "source URL". Leads imported later carry "Maps: <url>" in their notes.
+let MAPS_IDX={};
+const mapsReady=fetch("maps.json?v="+Math.floor(Date.now()/3600000),{cache:"no-cache"}).then(function(r){ return r.ok?r.json():{}; }).then(function(j){ MAPS_IDX=j||{}; }).catch(function(){});
+function placeIdOf(lead){
+  const id=lead && MAPS_IDX[lead.ID]; if(id) return id;
+  const m=String((lead&&lead.Notes)||"").match(/!19s(ChIJ[\w-]+)/); return m?m[1]:"";
+}
+function exactMapsUrl(lead){
+  const pid=placeIdOf(lead);
+  if(pid) return "https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(lead.Clinic||lead.Name||"place")+"&query_place_id="+pid;
+  const m=String(lead.Notes||"").match(/https?:\/\/\S*google\.[a-z.]+\/maps\/place\S*/); return m?m[0]:"";
+}
+// Exact place when known; otherwise a name search (shown differently so it's clear it's a search).
 function mapsUrl(lead){
+  const exact=exactMapsUrl(lead); if(exact) return exact;
   const q=[(lead.Clinic||lead.Name||""),(lead.City||"")].filter(Boolean).join(" ").trim();
   if(q) return "https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(q);
   const p=digits(lead.Phone); return p?("https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(p)):"";
 }
 // Latest line of a lead's appended notes history.
-function lastNote(lead){ const n=String(lead.Notes||"").trim(); if(!n) return ""; const lines=n.split("\n").filter(Boolean); return lines[lines.length-1]||""; }
+function lastNote(lead){ const n=String(lead.Notes||"").trim(); if(!n) return ""; const lines=n.split("\n").filter(function(x){ return x && !/^Maps: https?:/.test(x.trim()); }); return lines[lines.length-1]||""; }
 
 // All upcoming meetings + follow-ups from a set of leads, soonest first.
 function upcomingEvents(leads){
@@ -4488,7 +4516,7 @@ function InternListItem({l,refresh,notify,onEdit,actor,user}){
         </div>
         <div className="flex items-center gap-1 shrink-0">
           {l.Phone && <a href={"tel:"+telOf(l.Phone)} className="px-2 py-1 rounded-lg bg-green-50 text-green-700 text-xs">📞</a>}
-          {mu && <a href={mu} target="_blank" rel="noopener" className="px-2 py-1 rounded-lg bg-blue-50 text-blue-700 text-xs">📍 Map</a>}
+          <LinkIcons lead={l}/>
           <button onClick={()=>onEdit(l)} className="px-2 py-1 rounded-lg text-slate-400 hover:text-indigo-600 text-sm">✎</button>
           {canDelete(user,actor) && <button onClick={()=>deleteToBin(l,user||l["Assigned To"]||"",actor,refresh,notify)} title="Delete (moves to the Recycle bin)" className="px-2 py-1 rounded-lg text-red-500 border border-red-200 text-xs hover:text-red-700">Delete</button>}
         </div>
@@ -4572,7 +4600,10 @@ function PhoneCard({l}){
           <div className="text-xs text-slate-500 truncate">{[l.City, l.Reviews?("💬 "+l.Reviews+" reviews"):null, statusOf(l)].filter(Boolean).join(" · ")}</div>
           <div className="mt-1"><FolderBadge lead={l}/></div>
         </div>
-        {l.Rating && <span className="text-xs text-amber-500 whitespace-nowrap">★ {l.Rating}</span>}
+        <div className="flex flex-col items-end gap-1 shrink-0">
+          {l.Rating && <span className="text-xs text-amber-500 whitespace-nowrap">★ {l.Rating}</span>}
+          <LinkIcons lead={l}/>
+        </div>
       </div>
       <a href={hasPhone?("tel:"+telOf(l.Phone)):undefined} className={"block mt-3 text-2xl font-extrabold tracking-wider text-center py-2 rounded-xl "+(hasPhone?"bg-green-50 text-green-700 active:bg-green-100":"bg-slate-50 text-slate-300")}>{l.Phone||"— no number"}</a>
       <div className="grid grid-cols-2 gap-2 mt-2">
@@ -4693,7 +4724,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
           {lead.Reviews && <span>{lead.Reviews} reviews</span>}
           <FolderBadge lead={lead}/>
         </div>
-        <div className="mt-1"><WebsiteBadge lead={lead}/> <MapsLink lead={lead}/></div>
+        <div className="mt-1"><WebsiteBadge lead={lead}/></div>
         <div className="text-sm text-slate-500">
           {lead["Conflict Flag"]==="true" && <span className="text-red-500">⚠ slot conflict</span>}
         </div>
@@ -4714,7 +4745,9 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
         <a href={"tel:"+telOf(lead.Phone)} className="text-3xl font-black tracking-wider bg-gradient-to-r from-indigo-600 to-fuchsia-600 bg-clip-text text-transparent">{lead.Phone||"— no number"}</a>
         {lead.Email && <div className="text-xs text-slate-400 mt-0.5">{lead.Email}</div>}
       </div>
-      {mapsUrl(lead) && <a href={mapsUrl(lead)} target="_blank" rel="noopener" className="block text-center text-sm text-blue-600">📍 Open in Google Maps</a>}
+      {mapsUrl(lead) && (exactMapsUrl(lead)
+        ? <a href={mapsUrl(lead)} target="_blank" rel="noopener" className="block text-center text-sm font-medium text-blue-600">📍 Open in Google Maps</a>
+        : <a href={mapsUrl(lead)} target="_blank" rel="noopener" className="block text-center text-xs text-slate-500">🔍 Search Google Maps (exact place not saved for this lead)</a>)}
       <div className="flex items-center justify-center gap-1"><span className="text-[11px] text-slate-500">Grade:</span><PriorityRating lead={lead} refresh={onSaved} notify={notify}/></div>
       {canDelete(user,actor) && <div className="text-center"><button onClick={()=>deleteToBin(lead,user,actor,onSaved,notify)} className="text-xs text-red-500 border border-red-200 rounded-lg px-3 py-1 hover:text-red-700">🗑 Delete this lead</button></div>}
 
@@ -4739,7 +4772,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
       {notesHistory &&
         <div className="bg-slate-50 rounded-xl p-3 max-h-40 overflow-y-auto no-scrollbar">
           <div className="text-xs font-semibold text-slate-400 mb-1">Notes history</div>
-          {notesHistory.split("\n").map((line,i)=><div key={i} className="text-sm text-slate-600 mb-1">{line}</div>)}
+          {notesHistory.split("\n").filter(line=>!/^Maps: https?:/.test(line.trim())).map((line,i)=><div key={i} className="text-sm text-slate-600 mb-1">{line}</div>)}
         </div>}
 
       <div className="space-y-2">
@@ -4806,7 +4839,9 @@ class AppErrorBoundary extends React.Component{
     );
   }
 }
-ReactDOM.createRoot(document.getElementById("root")).render(<AppErrorBoundary>{IS_TV?<TVMode/>:<App/>}</AppErrorBoundary>);
+Promise.race([mapsReady, new Promise(function(r){ setTimeout(r,1500); })]).then(function(){
+  ReactDOM.createRoot(document.getElementById("root")).render(<AppErrorBoundary>{IS_TV?<TVMode/>:<App/>}</AppErrorBoundary>);
+});
 </script>
 
 <script>

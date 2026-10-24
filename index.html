@@ -1024,7 +1024,12 @@ function reminderMsg(l, who){
   const at=leadDateTime(l["Meeting Date"], l["Meeting Time"]); if(!at) return "";
   const name=String(l.Name||"").trim()||"there";
   const today=at.toDateString()===new Date().toDateString();
-  return "Hi "+name+" 🙂 Quick reminder: we're meeting "+(today?"today":("on "+WA_DAYS[at.getDay()]))+" at "+waClock(at)+".\n\n"
+  const ctz=leadTz(l), cts=zonedToTs(l["Meeting Date"],l["Meeting Time"],IST_TZ);
+  const cToday=fmtInTz(cts,ctz,{year:"numeric",month:"2-digit",day:"2-digit"})===fmtInTz(Date.now(),ctz,{year:"numeric",month:"2-digit",day:"2-digit"});
+  const whenTxt = ctz!==IST_TZ
+    ? ((cToday?"today":("on "+fmtInTz(cts,ctz,{weekday:"long"})))+" at "+fmtInTz(cts,ctz,{hour:"numeric",minute:"2-digit"})+" "+TZ_LABEL[ctz])
+    : ((today?"today":("on "+WA_DAYS[at.getDay()]))+" at "+waClock(at));
+  return "Hi "+name+" 🙂 Quick reminder: we're meeting "+whenTxt+".\n\n"
     +"📍 Google Meet: "+MEET_LINK+"\n\n"
     +"Keep 3–4 of your project photos handy. See you there!\n"
     +"— "+(who?(who+", "):"")+"Reactivify";
@@ -1922,6 +1927,49 @@ function waDetailsMsg(l){
     +WA_SAMPLE_LINKS+"\n\n"
     +proof+" Can I show you what yours could look like? 15 min on Thursday or Friday?";
 }
+/* ---- Client time zones ----
+   Times are SAVED in India time (your calendar, reminders, backend). For overseas clients
+   (detected from the phone's country code) you type and they see THEIR local time. */
+const IST_TZ="Asia/Kolkata";
+const TZ_LABEL={"America/New_York":"ET","Europe/London":"UK time","Australia/Sydney":"Sydney time"};
+const TZ_NAME={"America/New_York":"US Eastern (Boston / New York)","Europe/London":"UK (London)","Australia/Sydney":"Australia (Sydney)"};
+function leadTz(l){
+  const d=digits(l&&l.Phone);
+  if(d.length===11 && d.charAt(0)==="1") return "America/New_York";
+  if(/^44\d{10}$/.test(d)) return "Europe/London";
+  if(/^61\d{9}$/.test(d)) return "Australia/Sydney";
+  return IST_TZ;
+}
+function tzParts(ts,tz){ const p={}; new Intl.DateTimeFormat("en-US",{timeZone:tz,hourCycle:"h23",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"}).formatToParts(new Date(ts)).forEach(function(x){ p[x.type]=x.value; }); return p; }
+function tzOffsetMs(ts,tz){ const p=tzParts(ts,tz); return Date.UTC(+p.year,+p.month-1,+p.day,(+p.hour)%24,+p.minute,+p.second)-Math.floor(ts/1000)*1000; }
+function zonedToTs(date,time,tz){
+  const a=String(date||"").split("-").map(Number), b=String(time||"00:00").split(":").map(Number);
+  const guess=Date.UTC(a[0],a[1]-1,a[2],b[0]||0,b[1]||0);
+  let ts=guess-tzOffsetMs(guess,tz); ts=guess-tzOffsetMs(ts,tz); return ts;
+}
+function tsToZoned(ts,tz){ const p=tzParts(ts,tz); return {date:p.year+"-"+p.month+"-"+p.day, time:pad2((+p.hour)%24)+":"+p.minute}; }
+function convertDT(date,time,fromTz,toTz){ if(!date||!time||fromTz===toTz) return {date:date,time:time}; return tsToZoned(zonedToTs(date,time,fromTz),toTz); }
+function fmtInTz(ts,tz,opts){ return new Intl.DateTimeFormat("en-US",Object.assign({timeZone:tz},opts)).format(new Date(ts)); }
+function whenInTz(ts,tz){ return fmtInTz(ts,tz,{weekday:"long"})+", "+fmtInTz(ts,tz,{day:"numeric"})+" "+fmtInTz(ts,tz,{month:"short"})+" at "+fmtInTz(ts,tz,{hour:"numeric",minute:"2-digit"})+(TZ_LABEL[tz]?(" "+TZ_LABEL[tz]):""); }
+// "📅 ..." line of the meeting messages: the client's own time when they're overseas.
+function meetWhenText(l,at){
+  const tz=leadTz(l);
+  if(tz!==IST_TZ && l["Meeting Date"] && l["Meeting Time"]) return whenInTz(zonedToTs(l["Meeting Date"],l["Meeting Time"],IST_TZ),tz);
+  return WA_DAYS[at.getDay()]+", "+at.getDate()+" "+WA_MON[at.getMonth()]+" at "+waClock(at);
+}
+// Shown under date/time boxes for overseas leads: what you're typing and what gets saved.
+function TzHint({lead,date,time}){
+  const tz=leadTz(lead||{});
+  if(tz===IST_TZ) return null;
+  const ist=(date&&time)?convertDT(date,time,tz,IST_TZ):null;
+  return (
+    <div className="text-xs rounded-lg bg-sky-50 border border-sky-200 text-sky-800 px-2.5 py-1.5">
+      🌎 Type the <b>client's time</b>: {TZ_NAME[tz]}.
+      {ist && <span> That's <b>{whenInTz(zonedToTs(ist.date,ist.time,IST_TZ),IST_TZ).replace(/ at /," at ")} in India</b>, saved to your calendar.</span>}
+    </div>
+  );
+}
+
 // Every meeting runs in the same Google Meet room.
 const MEET_LINK = "https://meet.google.com/ptj-fxcq-bye";
 function waLink(phone, msg){ return "https://wa.me/"+waNumber(phone)+"?text="+encodeURIComponent(msg); }
@@ -1932,7 +1980,7 @@ function waMeetingMsg(l, who){
   const link=MEET_LINK;
   const sender=String(who||l["Assigned To"]||"").trim();
   return "Perfect, "+name+" \u2705\n\n"
-    +"\uD83D\uDCC5 "+WA_DAYS[at.getDay()]+", "+at.getDate()+" "+WA_MON[at.getMonth()]+" at "+waClock(at)+"\n"
+    +"\uD83D\uDCC5 "+meetWhenText(l,at)+"\n"
     +(link?("\uD83D\uDCCD Google Meet: "+link+"\n"):"")
     +"\u23F1 15\u201320 minutes\n\n"
     +"Have a look before we talk:\n"+WA_SAMPLE_LINKS+"\n\n"
@@ -2657,9 +2705,10 @@ function QuickSchedule({leads,user,refresh,notify}){
   async function save(){
     if(!leadId){ notify("Pick or create a lead first"); return; }
     setSaving(true);
+    const qtz=sel?leadTz(sel):IST_TZ, ist=qtz!==IST_TZ?convertDT(dt.date,dt.time,qtz,IST_TZ):dt;
     const patch = kind==="meeting"
-      ? {ID:leadId, Email:email, Status:"Meeting Booked", "Meeting Date":dt.date, "Meeting Time":dt.time}
-      : {ID:leadId, Email:email, Status:"Schedule Follow-up", "Followup Date":dt.date, "Followup Time":dt.time, "Followup Sent":""};
+      ? {ID:leadId, Email:email, Status:"Meeting Booked", "Meeting Date":ist.date, "Meeting Time":ist.time}
+      : {ID:leadId, Email:email, Status:"Schedule Follow-up", "Followup Date":ist.date, "Followup Time":ist.time, "Followup Sent":""};
     const res=await apiPost({action:"upsert", lead:patch});
     setSaving(false);
     if(res.ok){ notify(kind==="meeting"?"Meeting booked ✓":"Follow-up scheduled ✓"); setOpen(false); reset(); refreshLight(); }
@@ -2827,9 +2876,10 @@ function CloseItem({item,refresh,notify}){
   }
   async function saveResched(){
     setBusy(true);
+    const ctz=leadTz(l), ist=ctz!==IST_TZ?convertDT(dt.date,dt.time,ctz,IST_TZ):dt;
     const extra=item.type==="Meeting"
-      ? {Status:"Meeting Booked","Meeting Date":dt.date,"Meeting Time":dt.time,"DayBefore Sent":"","1Hr Sent":"","30Min Sent":""}
-      : {Status:"Schedule Follow-up","Followup Date":dt.date,"Followup Time":dt.time,"Followup Sent":""};
+      ? {Status:"Meeting Booked","Meeting Date":ist.date,"Meeting Time":ist.time,"DayBefore Sent":"","1Hr Sent":"","30Min Sent":""}
+      : {Status:"Schedule Follow-up","Followup Date":ist.date,"Followup Time":ist.time,"Followup Sent":""};
     const res=await apiPost({action:"upsert", lead:Object.assign({ID:l.ID},extra)});
     setBusy(false); setResched(false); if(res.ok){ notify("Rescheduled"); refreshLight(); } else notify("Failed");
   }
@@ -2865,6 +2915,7 @@ function CloseItem({item,refresh,notify}){
         : <div className="flex flex-wrap gap-2 mt-1 items-center">
             <input type="date" value={dt.date} onChange={e=>setDt({...dt,date:e.target.value})} className="border rounded-lg px-2 py-1 text-sm"/>
             <input type="time" value={dt.time} onChange={e=>setDt({...dt,time:e.target.value})} className="border rounded-lg px-2 py-1 text-sm"/>
+            <div className="w-full"><TzHint lead={l} date={dt.date} time={dt.time}/></div>
             <button onClick={saveResched} disabled={busy} className="px-2 py-1 rounded-lg bg-indigo-600 text-white text-sm">Save</button>
             <button onClick={()=>setResched(false)} className="px-2 py-1 rounded-lg bg-white border text-sm">Cancel</button>
           </div>}
@@ -4774,7 +4825,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
     const patch={ID:lead.ID};
     const effOutcome = opts.outcome!==undefined ? opts.outcome : outcome;
     if(effOutcome) patch.Status=effOutcome;
-    if(effOutcome==="Call Back"){ patch["Followup Date"]=cb.on?cb.date:""; patch["Followup Time"]=cb.on?cb.time:""; patch["Followup Sent"]=""; }
+    if(effOutcome==="Call Back"){ const cbi=cb.on?(foreign?convertDT(cb.date,cb.time,ltz,IST_TZ):cb):null; patch["Followup Date"]=cbi?cbi.date:""; patch["Followup Time"]=cbi?cbi.time:""; patch["Followup Sent"]=""; }
     let noteText=note.trim();
     if(effOutcome==="Landed" && !opts.noStat){ const amt=askAmount("🏆 Client landed! Deal value in ₹ (optional):"); if(amt) noteText="💰 Landed "+inr(amt)+(noteText?(" — "+noteText):""); }
     if(noteText){ const entry="["+nowStamp()+" · "+(actor||user)+"] "+noteText;
@@ -4788,15 +4839,17 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
     setSaving(false);
     notify(opts.msg||"Saved"); if(!opts.stay) onNext();
   }
+  const ltz=leadTz(lead), foreign=ltz!==IST_TZ;
   function confirmPicker(){
+    const ist=foreign?convertDT(dt.date,dt.time,ltz,IST_TZ):dt;   // the boxes hold the client's time for overseas leads
     // Open WhatsApp with the confirmation BEFORE moving on to the next lead
     // (must happen inside this click, or the browser blocks the new tab).
     if(picker==="meeting" && wa){
-      const msg=waMeetingMsg(Object.assign({},lead,{"Meeting Date":dt.date,"Meeting Time":dt.time}), actor||user);
+      const msg=waMeetingMsg(Object.assign({},lead,{"Meeting Date":ist.date,"Meeting Time":ist.time}), actor||user);
       if(msg) window.open(waLink(lead.Phone,msg),"_blank");
     }
-    if(picker==="meeting") save({Status:"Meeting Booked","Meeting Date":dt.date,"Meeting Time":dt.time},{outcome:"Meeting Booked"});
-    else if(picker==="followup") save({Status:"Schedule Follow-up","Followup Date":dt.date,"Followup Time":dt.time},{outcome:"Schedule Follow-up"});
+    if(picker==="meeting") save({Status:"Meeting Booked","Meeting Date":ist.date,"Meeting Time":ist.time},{outcome:"Meeting Booked"});
+    else if(picker==="followup") save({Status:"Schedule Follow-up","Followup Date":ist.date,"Followup Time":ist.time},{outcome:"Schedule Follow-up"});
     setPicker(null);
   }
   function onOutcomeChange(v){
@@ -4816,7 +4869,10 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
     if(booked && waMeet){ window.open(waLink(lead.Phone,waMeet),"_blank"); return; }
     setOutcome("Meeting Booked"); setPicker("meeting");
   }
-  function rescheduleMeeting(){ setDt({date:lead["Meeting Date"]||todayISO(), time:lead["Meeting Time"]||"11:00"}); setPicker("meeting"); }
+  function rescheduleMeeting(){
+    const cur={date:lead["Meeting Date"]||todayISO(), time:lead["Meeting Time"]||"11:00"};
+    setDt(foreign&&lead["Meeting Date"]?convertDT(cur.date,cur.time,IST_TZ,ltz):cur); setPicker("meeting");
+  }
   function cancelMeeting(){
     if(!confirm("Cancel this meeting? It will be removed from the calendar.")) return;
     save({Status:"Interested","Meeting Date":"","Meeting Time":""},{outcome:"", noStat:true, stay:true, msg:"Meeting cancelled"});
@@ -4895,7 +4951,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
       {booked && lead["Meeting Date"] &&
         <div className="bg-green-50 rounded-xl p-3 text-sm space-y-2">
           <div className="flex items-center justify-between">
-            <span>📅 Meeting: <b>{lead["Meeting Date"]} {lead["Meeting Time"]}</b></span>
+            <span>📅 Meeting: <b>{lead["Meeting Date"]} {lead["Meeting Time"]}</b> (India){foreign && lead["Meeting Date"] && lead["Meeting Time"] && <span className="text-sky-700"> · client: <b>{whenInTz(zonedToTs(lead["Meeting Date"],lead["Meeting Time"],IST_TZ),ltz)}</b></span>}</span>
             {gcal && <a href={gcal} target="_blank" className="px-2 py-1 rounded-lg bg-white border text-xs">Add to Calendar</a>}
           </div>
           <div className="flex gap-2">
@@ -4932,6 +4988,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
                   <input type="date" value={cb.date} onChange={e=>setCb({...cb,date:e.target.value})} className="border rounded-lg px-2 py-1 text-sm"/>
                   <input type="time" value={cb.time} onChange={e=>setCb({...cb,time:e.target.value})} className="border rounded-lg px-2 py-1 text-sm"/>
                   <button onClick={()=>setCb({...cb,on:false})} className="text-xs text-slate-500 underline">remove time</button>
+                  <div className="w-full"><TzHint lead={lead} date={cb.date} time={cb.time}/></div>
                 </React.Fragment>}
             <span className="text-[11px] text-violet-600 w-full">{cb.on?"You'll get a reminder email at this time.":"Time is optional. Save as is, or add one for a reminder."}</span>
           </div>}
@@ -4945,6 +5002,9 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
           <div className="flex gap-2">
             <input type="date" value={dt.date} onChange={e=>setDt({...dt,date:e.target.value})} className="border rounded-lg px-2 py-1 text-sm flex-1"/>
             <input type="time" value={dt.time} onChange={e=>setDt({...dt,time:e.target.value})} className="border rounded-lg px-2 py-1 text-sm flex-1"/>
+          </div>
+          <div className="flex gap-2">
+            <TzHint lead={lead} date={dt.date} time={dt.time}/>
           </div>
           <div className="flex gap-2">
             <button onClick={confirmPicker} className="flex-1 py-2 rounded-lg bg-indigo-600 text-white text-sm">{picker==="meeting"&&wa?"Confirm & open WhatsApp":"Confirm"}</button>

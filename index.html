@@ -61,6 +61,7 @@
   .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 999px; margin-right: 5px; vertical-align: 1px; }
   @keyframes rv-pulse-ring { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,.45); } 100% { box-shadow: 0 0 0 26px rgba(34,197,94,0); } }
   .start-btn { animation: rv-pulse-ring 1.8s ease-out infinite; }
+  .rv-hl { background: #fde68a; color: inherit; border-radius: 3px; padding: 0 1px; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
   }
@@ -1624,6 +1625,119 @@ function LostList({leads,notify}){
   );
 }
 
+/* ============ SEARCH: find a lead by place (business, owner, phone, city, email) or by its notes ============ */
+// Same search as the Community app. Opens from the header button, "/" or Ctrl+K.
+function foldText(s){ return String(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase(); }
+// Highlights every case/accent-insensitive match of q in text.
+function Hl({text,q}){
+  text=String(text||""); if(!q) return text;
+  const f=foldText(text), k=foldText(q), out=[]; let i=0, j;
+  while(k && (j=f.indexOf(k,i))>=0){ if(j>i) out.push(text.slice(i,j)); out.push(<mark key={j} className="rv-hl">{text.slice(j,j+k.length)}</mark>); i=j+k.length; }
+  out.push(text.slice(i));
+  return out;
+}
+let _openSearch=null;
+function openSearch(){ if(_openSearch) _openSearch(); }
+function SearchMount({leads,refresh,notify}){
+  const [open,setOpen]=useState(false);
+  useEffect(function(){
+    _openSearch=function(){ setOpen(true); };
+    function onKey(e){
+      const t=e.target, tag=(t&&t.tagName)||"";
+      if(/^(INPUT|TEXTAREA|SELECT)$/.test(tag) || (t&&t.isContentEditable)) return;
+      if(e.key==="/" || ((e.ctrlKey||e.metaKey) && (e.key==="k"||e.key==="K"))){ e.preventDefault(); setOpen(true); }
+    }
+    window.addEventListener("keydown",onKey);
+    return function(){ window.removeEventListener("keydown",onKey); _openSearch=null; };
+  },[]);
+  if(!open) return null;
+  return <SearchOverlay leads={leads} onClose={function(){ setOpen(false); }} refresh={refresh} notify={notify}/>;
+}
+function SearchOverlay({leads,onClose,refresh,notify}){
+  const [q,setQ]=useState("");
+  const [scope,setScope]=useState(function(){ try{ return localStorage.getItem("reactivify.searchScope")||"both"; }catch(e){ return "both"; } });
+  const [open,setOpen]=useState(null);     // lead shown in detail
+  const [edit,setEdit]=useState(null);
+  useEffect(function(){ try{ localStorage.setItem("reactivify.searchScope",scope); }catch(e){} },[scope]);
+  useEffect(function(){ function k(e){ if(e.key==="Escape" && !edit){ if(open) setOpen(null); else onClose(); } } window.addEventListener("keydown",k); return function(){ window.removeEventListener("keydown",k); }; },[open,edit]);
+  const term=q.trim(), k=foldText(term), kd=term.replace(/\D/g,"");
+  const results=useMemo(function(){
+    if(k.length<2) return [];
+    const out=[];
+    (leads||[]).forEach(function(l){
+      const placeHit = scope!=="notes" && ([l.Clinic,l.Name,l.City,l.Folder,l.Email,l.Website].some(function(v){ return foldText(v).indexOf(k)>=0; }) || (kd.length>=3 && digits(l.Phone).indexOf(kd)>=0));
+      const lines = scope!=="place" ? String(l.Notes||"").split("\n").filter(function(x){ return x && !/^Maps: https?:/.test(x.trim()) && foldText(x).indexOf(k)>=0; }) : [];
+      if(placeHit || lines.length) out.push({l:l, place:placeHit, lines:lines});
+    });
+    return out.sort(function(a,b){ return (b.place-a.place) || String(a.l.Clinic||a.l.Name).localeCompare(String(b.l.Clinic||b.l.Name)); }).slice(0,100);
+  },[leads,k,kd,scope]);
+  const cur = open ? ((leads||[]).find(function(l){ return l.ID===open.ID; }) || open) : null;
+  const tabs=[["both","Both"],["place","🏪 Place"],["notes","📝 Notes"]];
+  const notesShown = cur ? String(cur.Notes||"").split("\n").filter(function(x){ return !/^Maps: https?:/.test(x.trim()); }).join("\n").trim() : "";
+  return (
+    <div className="fixed inset-0 z-[55] bg-slate-900/50 flex items-start justify-center p-3 sm:p-8" onClick={onClose}>
+      <div className="game-modal bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[88vh] flex flex-col" onClick={function(e){ e.stopPropagation(); }}>
+        {!cur && <React.Fragment>
+          <div className="p-3 border-b border-slate-200 space-y-2">
+            <div className="flex gap-2 items-center">
+              <input autoFocus value={q} onChange={function(e){ setQ(e.target.value); }} placeholder={scope==="notes"?"Search inside notes… (e.g. budget, Diwali)":scope==="place"?"Search business, owner, phone, city…":"Search places and notes…"}
+                className="flex-1 border rounded-xl px-3 py-2.5 text-base"/>
+              <button onClick={onClose} className="px-3 py-2 rounded-xl bg-slate-100 text-sm">Esc</button>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-slate-500">Search in:</span>
+              <div className="flex gap-1 bg-slate-100 rounded-full p-1 text-sm">
+                {tabs.map(function(t){ return <button key={t[0]} onClick={function(){ setScope(t[0]); }} className={"px-3 py-1 rounded-full "+(scope===t[0]?"bg-white shadow font-semibold text-indigo-700":"text-slate-600")}>{t[1]}</button>; })}
+              </div>
+              {k.length>=2 && <span className="text-xs text-slate-500 ml-auto">{results.length>=100?"100+":results.length} found</span>}
+            </div>
+          </div>
+          <div className="overflow-y-auto p-2 space-y-1">
+            {k.length<2 && <div className="p-6 text-center text-sm text-slate-400">Type at least 2 letters. Press <b>/</b> anywhere to open search.</div>}
+            {k.length>=2 && !results.length && <div className="p-6 text-center text-sm text-slate-400">No {scope==="notes"?"notes":scope==="place"?"places":"places or notes"} match “{term}”.</div>}
+            {results.map(function(r){ const l=r.l; return (
+              <button key={l.ID} onClick={function(){ setOpen(l); }} className="w-full text-left rounded-xl px-3 py-2 hover:bg-slate-50 border border-transparent hover:border-slate-200">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold"><Hl text={l.Clinic||l.Name||"(no name)"} q={r.place?term:""}/></span>
+                  <StatusBadge status={l.Status||"New"}/>
+                  {l["Assigned To"] && <span className="text-[11px] text-slate-400">{l["Assigned To"]}</span>}
+                  {r.lines.length>0 && <span className="text-[11px] text-amber-700">📝 {r.lines.length} note{r.lines.length>1?"s":""}</span>}
+                </div>
+                <div className="text-xs text-slate-500"><Hl text={[l.Name&&l.Clinic?l.Name:"", l.City, l.Phone].filter(Boolean).join(" · ")} q={r.place?term:""}/></div>
+                {r.lines.slice(0,2).map(function(x,i){ return <div key={i} className="text-xs text-slate-600 mt-0.5 truncate">“<Hl text={x} q={term}/>”</div>; })}
+              </button>); })}
+          </div>
+        </React.Fragment>}
+        {cur && <div className="overflow-y-auto p-4 space-y-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-xl font-bold">{cur.Clinic||cur.Name||"(no name)"}</div>
+              <div className="text-sm text-slate-500">{[cur.Clinic?cur.Name:"", cur.City, cur["Assigned To"]].filter(Boolean).join(" · ")}</div>
+              <div className="mt-1 flex items-center gap-2 flex-wrap"><StatusBadge status={cur.Status||"New"}/>
+                {cur["Followup Date"] && <span className="text-xs text-slate-500">⏰ {cur["Followup Date"]} {cur["Followup Time"]||""}</span>}
+                {cur["Meeting Date"] && <span className="text-xs text-slate-500">📅 {cur["Meeting Date"]} {cur["Meeting Time"]||""}</span>}</div>
+            </div>
+            <button onClick={function(){ setOpen(null); }} className="px-3 py-1.5 rounded-lg bg-slate-100 text-sm shrink-0">← Results</button>
+          </div>
+          <div className="flex gap-2 flex-wrap items-center">
+            {cur.Phone && <a href={"tel:"+telOf(cur.Phone)} className="px-3 py-2 rounded-lg bg-green-600 text-white text-sm font-semibold">📞 {cur.Phone}</a>}
+            {cur.Phone && <a href={"https://wa.me/"+waNumber(cur.Phone)} target="_blank" rel="noopener" className="px-3 py-2 rounded-lg bg-emerald-500 text-white text-sm font-semibold">WhatsApp</a>}
+            <LinkIcons lead={cur}/>
+            <button onClick={function(){ setEdit(cur); }} className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold">✎ Edit lead</button>
+          </div>
+          <div>
+            <div className="text-xs font-semibold text-slate-500 mb-1">Notes</div>
+            {notesShown
+              ? <div className="text-sm whitespace-pre-wrap bg-slate-50 border border-slate-200 rounded-xl p-3 leading-relaxed"><Hl text={notesShown} q={scope!=="place"?term:""}/></div>
+              : <div className="text-sm text-slate-400">No notes yet.</div>}
+          </div>
+        </div>}
+      </div>
+      {edit && <div onClick={function(e){ e.stopPropagation(); }}><EditLead lead={edit} onClose={function(){ setEdit(null); }} refresh={refresh} notify={notify}/></div>}
+    </div>
+  );
+}
+
 /* ============ OWNER DELETE (admin password once per tab) ============ */
 // The owner can delete from his own intern login too. Deleting is an admin-only write,
 // so the first delete in a tab asks for the admin password (in a proper password box).
@@ -2310,6 +2424,7 @@ function App(){
       <GameFX/>
       <AdminKeyPrompt/>
       <LostPrompt/>
+      <SearchMount leads={isAdmin ? leads : leads.filter(function(l){ return String(l["Assigned To"]||"").trim().toLowerCase()===String(user||"").toLowerCase(); })} refresh={refresh} notify={notify}/>
       <Header user={user} isAdmin={isAdmin} session={session}
         onSwitch={()=>{ if(isAdmin){ clearAdminKey(); setAdminAuthed(false); setUser(null); } else setLogoutOpen(true); }} onRefresh={refresh}
         loading={loading} notifPerm={notifPerm} onEnableNotif={askNotif}/>
@@ -2360,6 +2475,7 @@ function Header({user,isAdmin,session,onSwitch,onRefresh,loading,notifPerm,onEna
       <div className="flex items-center gap-2">
         {notifPerm!=="granted" && notifPerm!=="unsupported" &&
           <button onClick={onEnableNotif} className="text-sm px-3 py-1.5 rounded-lg bg-amber-100 text-amber-800">🔔 Enable alerts</button>}
+        <button onClick={openSearch} title="Search leads and notes ( / or Ctrl+K )" className="text-sm px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200">🔎 Search</button>
         <button onClick={onRefresh} className="text-sm px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200">{loading?"…":"↻"}</button>
         <button onClick={onSwitch} className="text-sm px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200">{isAdmin?"Switch":"Log out"}</button>
       </div>

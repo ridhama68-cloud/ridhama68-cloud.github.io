@@ -1922,8 +1922,9 @@ function waDetailsMsg(l){
   const rev=String(l.Reviews||"").trim(), rat=String(l.Rating||"").trim();
   const proof=(rev&&rat)?("With "+rev+" reviews at "+rat+"\u2605, your work deserves this."):(rev?("With "+rev+" reviews, your work deserves this."):"Your work deserves this.");
   return "Thanks for your time just now\n\n"
-    +"We build websites only for interior designers. Your projects staged like a showroom, so serious clients trust you before they call.\n\n"
-    +"\u2714 Live in 4 days, or it's free\n\u2714 Pay half to start, half once it's live\n\u2714 You own everything, no monthly fees\n\n"
+    +"We help interior designers get more clients online: a website that shows your projects like a showroom, and ads that bring the right people to it.\n\n"
+    +"🌐 Website\n\u2714 Live in 4 days, or it's free\n\u2714 Pay half to start, half once it's live\n\u2714 You own everything, no monthly fees\n\n"
+    +"📣 Ads\n\u2714 Google and Instagram ads aimed at people looking for an interior designer in your city\n\u2714 We set them up and manage them for you\n\u2714 Simple monthly report: what you spent and how many enquiries came in\n\n"
     +WA_SAMPLE_LINKS+"\n\n"
     +proof+" Can I show you what yours could look like? 15 min on Thursday or Friday?";
 }
@@ -1985,7 +1986,7 @@ function waMeetingMsg(l, who){
     +"\u23F1 15\u201320 minutes\n\n"
     +"Have a look before we talk:\n"+WA_SAMPLE_LINKS+"\n\n"
     +"To make it useful, please keep ready:\n\u2022 3\u20134 of your best project photos (phone photos are fine)\n\u2022 Your Instagram handle\n\n"
-    +"I'll show you a first look at your homepage on the call. See you then!\n"
+    +"On the call I'll show you a first look at your homepage and a simple ad plan for your studio. See you then!\n"
     +"\u2014 "+(sender?(sender+", "):"")+"Reactivify";
 }
 function todayISO(){ const d=new Date(); return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }

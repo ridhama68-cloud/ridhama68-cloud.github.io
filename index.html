@@ -147,10 +147,16 @@ function _optimisticPatch(payload, res){
     }
   }catch(e){ /* best-effort only -- refresh() reconciles regardless */ }
 }
+const ADMIN_KEEP="reactivify.adminKeyKeep";
+function keptAdminKey(){ try{ return localStorage.getItem(ADMIN_KEEP)||""; }catch(e){ return ""; } }
+function getAdminKey(){ let k=""; try{ k=sessionStorage.getItem("reactivify.adminKey")||""; }catch(e){} return k||keptAdminKey(); }
+function saveAdminKey(key,keep){ try{ sessionStorage.setItem("reactivify.adminKey",key); }catch(e){} if(keep){ try{ localStorage.setItem(ADMIN_KEEP,key); }catch(e){} } }
+function forgetAdminLogin(){ try{ localStorage.removeItem(ADMIN_KEEP); }catch(e){} }
+// Leaving the admin panel ends this tab's login; a "Stay signed in" key stays until "Sign out".
 function clearAdminKey(){ try{ sessionStorage.removeItem("reactivify.adminKey"); }catch(e){} }
 function newOpId(){ try{ return crypto.randomUUID(); }catch(e){ return "op"+Date.now()+Math.random().toString(36).slice(2); } }
 async function apiPost(payload){
-  let adminKey=""; try{ adminKey=sessionStorage.getItem("reactivify.adminKey")||""; }catch(e){}
+  const adminKey=getAdminKey();
   const body = JSON.stringify(Object.assign({opId:newOpId()}, adminKey?{adminKey:adminKey}:{}, payload));
   let lastErr = null;
   for(let attempt=0; attempt<8; attempt++){
@@ -161,6 +167,7 @@ async function apiPost(payload){
         body: body
       });
       const res = await r.json();       // readable response == write persisted
+      if(res && res.ok===false && /unauthori[sz]ed/i.test(String(res.error||"")) && adminKey && adminKey===keptAdminKey()) forgetAdminLogin();
       if(!(res && res.ok===false) && !NO_SYNC_ACTIONS[payload.action]){ const wt=Number(r.headers.get("x-worker-time")); _lastWriteAt = wt>0 ? wt : Date.now(); }
       _optimisticPatch(payload, res);
       return res;
@@ -1636,24 +1643,26 @@ function Hl({text,q}){
   out.push(text.slice(i));
   return out;
 }
-let _openSearch=null;
+let _openSearch=null, _openList=null;
 function openSearch(){ if(_openSearch) _openSearch(); }
+function openList(title,list){ if(_openList) _openList(title,list); }
 function SearchMount({leads,refresh,notify}){
   const [open,setOpen]=useState(false);
   useEffect(function(){
     _openSearch=function(){ setOpen(true); };
+    _openList=function(title,list){ setOpen({title:title, list:list}); };
     function onKey(e){
       const t=e.target, tag=(t&&t.tagName)||"";
       if(/^(INPUT|TEXTAREA|SELECT)$/.test(tag) || (t&&t.isContentEditable)) return;
       if(e.key==="/" || ((e.ctrlKey||e.metaKey) && (e.key==="k"||e.key==="K"))){ e.preventDefault(); setOpen(true); }
     }
     window.addEventListener("keydown",onKey);
-    return function(){ window.removeEventListener("keydown",onKey); _openSearch=null; };
+    return function(){ window.removeEventListener("keydown",onKey); _openSearch=null; _openList=null; };
   },[]);
   if(!open) return null;
-  return <SearchOverlay leads={leads} onClose={function(){ setOpen(false); }} refresh={refresh} notify={notify}/>;
+  return <SearchOverlay leads={leads} preset={open===true?null:open} onClose={function(){ setOpen(false); }} refresh={refresh} notify={notify}/>;
 }
-function SearchOverlay({leads,onClose,refresh,notify}){
+function SearchOverlay({leads,onClose,refresh,notify,preset}){
   const [q,setQ]=useState("");
   const [scope,setScope]=useState(function(){ try{ return localStorage.getItem("reactivify.searchScope")||"both"; }catch(e){ return "both"; } });
   const [open,setOpen]=useState(null);     // lead shown in detail
@@ -1662,15 +1671,20 @@ function SearchOverlay({leads,onClose,refresh,notify}){
   useEffect(function(){ function k(e){ if(e.key==="Escape" && !edit){ if(open) setOpen(null); else onClose(); } } window.addEventListener("keydown",k); return function(){ window.removeEventListener("keydown",k); }; },[open,edit]);
   const term=q.trim(), k=foldText(term), kd=term.replace(/\D/g,"");
   const results=useMemo(function(){
-    if(k.length<2) return [];
+    if(k.length<2 && !preset) return [];
     const out=[];
-    (leads||[]).forEach(function(l){
+    // A card list follows live edits: look each lead up again by ID.
+    const byId={}; (leads||[]).forEach(function(l){ byId[l.ID]=l; });
+    const src=preset ? preset.list.map(function(l){ return byId[l.ID]||l; }) : (leads||[]);
+    if(preset && k.length<2) return src.slice(0,500).map(function(l){ return {l:l, place:false, lines:[]}; });
+    src.forEach(function(l){
       const placeHit = scope!=="notes" && ([l.Clinic,l.Name,l.City,l.Folder,l.Email,l.Website].some(function(v){ return foldText(v).indexOf(k)>=0; }) || (kd.length>=3 && digits(l.Phone).indexOf(kd)>=0));
       const lines = scope!=="place" ? String(l.Notes||"").split("\n").filter(function(x){ return x && !/^Maps: https?:/.test(x.trim()) && foldText(x).indexOf(k)>=0; }) : [];
       if(placeHit || lines.length) out.push({l:l, place:placeHit, lines:lines});
     });
+    if(preset) return out.slice(0,500);
     return out.sort(function(a,b){ return (b.place-a.place) || String(a.l.Clinic||a.l.Name).localeCompare(String(b.l.Clinic||b.l.Name)); }).slice(0,100);
-  },[leads,k,kd,scope]);
+  },[leads,k,kd,scope,preset]);
   const cur = open ? ((leads||[]).find(function(l){ return l.ID===open.ID; }) || open) : null;
   const tabs=[["both","Both"],["place","🏪 Place"],["notes","📝 Notes"]];
   const notesShown = cur ? String(cur.Notes||"").split("\n").filter(function(x){ return !/^Maps: https?:/.test(x.trim()); }).join("\n").trim() : "";
@@ -1679,8 +1693,9 @@ function SearchOverlay({leads,onClose,refresh,notify}){
       <div className="game-modal bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[88vh] flex flex-col" onClick={function(e){ e.stopPropagation(); }}>
         {!cur && <React.Fragment>
           <div className="p-3 border-b border-slate-200 space-y-2">
+            {preset && <div className="text-lg font-bold">{preset.title} <span className="text-sm font-normal text-slate-500">· {preset.list.length}</span></div>}
             <div className="flex gap-2 items-center">
-              <input autoFocus value={q} onChange={function(e){ setQ(e.target.value); }} placeholder={scope==="notes"?"Search inside notes… (e.g. budget, Diwali)":scope==="place"?"Search business, owner, phone, city…":"Search places and notes…"}
+              <input autoFocus value={q} onChange={function(e){ setQ(e.target.value); }} placeholder={preset?"Filter this list…":scope==="notes"?"Search inside notes… (e.g. budget, Diwali)":scope==="place"?"Search business, owner, phone, city…":"Search places and notes…"}
                 className="flex-1 border rounded-xl px-3 py-2.5 text-base"/>
               <button onClick={onClose} className="px-3 py-2 rounded-xl bg-slate-100 text-sm">Esc</button>
             </div>
@@ -1689,12 +1704,13 @@ function SearchOverlay({leads,onClose,refresh,notify}){
               <div className="flex gap-1 bg-slate-100 rounded-full p-1 text-sm">
                 {tabs.map(function(t){ return <button key={t[0]} onClick={function(){ setScope(t[0]); }} className={"px-3 py-1 rounded-full "+(scope===t[0]?"bg-white shadow font-semibold text-indigo-700":"text-slate-600")}>{t[1]}</button>; })}
               </div>
-              {k.length>=2 && <span className="text-xs text-slate-500 ml-auto">{results.length>=100?"100+":results.length} found</span>}
+              {(k.length>=2||preset) && <span className="text-xs text-slate-500 ml-auto">{preset?(results.length>=500?"500+":results.length)+" shown":(results.length>=100?"100+":results.length)+" found"}</span>}
             </div>
           </div>
           <div className="overflow-y-auto p-2 space-y-1">
-            {k.length<2 && <div className="p-6 text-center text-sm text-slate-400">Type at least 2 letters. Press <b>/</b> anywhere to open search.</div>}
-            {k.length>=2 && !results.length && <div className="p-6 text-center text-sm text-slate-400">No {scope==="notes"?"notes":scope==="place"?"places":"places or notes"} match “{term}”.</div>}
+            {preset && !results.length && <div className="p-6 text-center text-sm text-slate-400">Nothing here.</div>}
+            {!preset && k.length<2 && <div className="p-6 text-center text-sm text-slate-400">Type at least 2 letters. Press <b>/</b> anywhere to open search.</div>}
+            {!preset && k.length>=2 && !results.length && <div className="p-6 text-center text-sm text-slate-400">No {scope==="notes"?"notes":scope==="place"?"places":"places or notes"} match “{term}”.</div>}
             {results.map(function(r){ const l=r.l; return (
               <button key={l.ID} onClick={function(){ setOpen(l); }} className="w-full text-left rounded-xl px-3 py-2 hover:bg-slate-50 border border-transparent hover:border-slate-200">
                 <div className="flex items-center gap-2 flex-wrap">
@@ -1702,6 +1718,8 @@ function SearchOverlay({leads,onClose,refresh,notify}){
                   <StatusBadge status={l.Status||"New"}/>
                   {l["Assigned To"] && <span className="text-[11px] text-slate-400">{l["Assigned To"]}</span>}
                   {r.lines.length>0 && <span className="text-[11px] text-amber-700">📝 {r.lines.length} note{r.lines.length>1?"s":""}</span>}
+                  {preset && l["Meeting Date"] && /booked|show|landed|lost/i.test(l.Status||"") && <span className="text-[11px] text-green-700 ml-auto">📅 {l["Meeting Date"]} {l["Meeting Time"]||""}</span>}
+                  {preset && !(l["Meeting Date"] && /booked|show|landed|lost/i.test(l.Status||"")) && l["Followup Date"] && <span className="text-[11px] text-amber-700 ml-auto">⏰ {l["Followup Date"]} {l["Followup Time"]||""}</span>}
                 </div>
                 <div className="text-xs text-slate-500"><Hl text={[l.Name&&l.Clinic?l.Name:"", l.City, l.Phone].filter(Boolean).join(" · ")} q={r.place?term:""}/></div>
                 {r.lines.slice(0,2).map(function(x,i){ return <div key={i} className="text-xs text-slate-600 mt-0.5 truncate">“<Hl text={x} q={term}/>”</div>; })}
@@ -1743,7 +1761,7 @@ function SearchOverlay({leads,onClose,refresh,notify}){
 // so the first delete in a tab asks for the admin password (in a proper password box).
 function canDelete(user,actor){ return actor==="Team" || String(user||"").trim().toLowerCase()==="ridham"; }
 let _keyAsk=null;
-function hasAdminKey(){ try{ return !!sessionStorage.getItem("reactivify.adminKey"); }catch(e){ return false; } }
+function hasAdminKey(){ return !!getAdminKey(); }
 function ensureAdminKey(){
   if(hasAdminKey()) return Promise.resolve(true);
   return new Promise(function(resolve){ if(_keyAsk) _keyAsk(resolve); else resolve(false); });
@@ -1761,7 +1779,7 @@ function AdminKeyPrompt(){
   function close(ok){ ask(ok); setAsk(null); setPw(""); }
   async function submit(e){ e.preventDefault(); if(!pw||busy) return; setBusy(true);
     const res=await apiPost({action:"adminAuth", password:pw}); setBusy(false);
-    if(res&&res.ok&&res.key){ try{ sessionStorage.setItem("reactivify.adminKey",res.key); }catch(e2){} close(true); } else setErr(true); }
+    if(res&&res.ok&&res.key){ saveAdminKey(res.key,false); close(true); } else setErr(true); }
   return (
     <div className="fixed inset-0 z-[60] bg-slate-900/40 flex items-center justify-center p-4" onClick={()=>close(false)}>
       <form onSubmit={submit} onClick={e=>e.stopPropagation()} className="game-modal bg-white rounded-2xl shadow-2xl p-5 w-full max-w-sm space-y-3">
@@ -2403,7 +2421,7 @@ function App(){
   const isAdmin = user==="Team";
 
   // Admin panel is password-protected.
-  if(isAdmin && !adminAuthed)
+  if(isAdmin && !adminAuthed && !keptAdminKey())
     return <AdminGate onOk={()=>setAdminAuthed(true)} onCancel={()=>{ clearAdminKey(); setUser(null); }}/>;
 
   // Interns: this browser/device must be approved by an admin before they can
@@ -2662,6 +2680,7 @@ function CountdownPill({events}){
 function Login({interns,onPick,onNeedInterns,configMissing}){
   useEffect(()=>{ if(!configMissing) onNeedInterns(); },[]);
   const list = ["Team", ...interns.map(i=>i.name)];
+  const [kept,setKept]=useState(!!keptAdminKey());
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6">
       <div className="w-16 h-16 rounded-3xl bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 text-white text-3xl font-black flex items-center justify-center shadow-xl mb-4 game-bounce">R</div>
@@ -2672,11 +2691,12 @@ function Login({interns,onPick,onNeedInterns,configMissing}){
           <button key={n} onClick={()=>onPick(n)} style={{animationDelay:(i*45)+"ms"}}
             className={"game-row flex items-center gap-3 px-4 py-3.5 rounded-2xl font-semibold text-left border transition-all hover:-translate-y-0.5 hover:shadow-lg "+(n==="Team"?"bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600 text-white border-transparent shadow-lg":"bg-white/90 border-slate-200 hover:border-indigo-300 shadow-sm")}>
             {n==="Team" ? <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-xl shrink-0">👑</div> : <Avatar name={n} size={40}/>}
-            <div className="min-w-0"><div className="truncate">{n}</div><div className={"text-xs font-normal "+(n==="Team"?"opacity-80":"text-slate-400")}>{n==="Team"?"Admin":"Tap to start"}</div></div>
+            <div className="min-w-0"><div className="truncate">{n}</div><div className={"text-xs font-normal "+(n==="Team"?"opacity-80":"text-slate-400")}>{n==="Team"?(kept?"Admin · signed in":"Admin"):"Tap to start"}</div></div>
           </button>
         ))}
       </div>
       {interns.length===0 && <div className="text-xs text-slate-400 mt-4">Loading team…</div>}
+      {kept && <button onClick={()=>{ forgetAdminLogin(); clearAdminKey(); setKept(false); }} className="text-xs text-slate-400 hover:text-red-600 mt-5">🔒 Sign out admin on this device</button>}
     </div>
   );
 }
@@ -2684,6 +2704,7 @@ function Login({interns,onPick,onNeedInterns,configMissing}){
 /* ================== ADMIN PASSWORD GATE ================== */
 function AdminGate({onOk,onCancel}){
   const [pw,setPw]=useState("");
+  const [keep,setKeep]=useState(true);
   const [err,setErr]=useState(false);
   const [busy,setBusy]=useState(false);
   // Checked on the server (CONFIG.ADMIN_PASSWORD in Code_v2.gs) -- never compared
@@ -2694,7 +2715,7 @@ function AdminGate({onOk,onCancel}){
     setBusy(true);
     const res=await apiPost({action:"adminAuth", password:pw});
     setBusy(false);
-    if(res && res.ok && res.key){ try{ sessionStorage.setItem("reactivify.adminKey", res.key); }catch(e){} setErr(false); onOk(); } else { setErr(true); } }
+    if(res && res.ok && res.key){ saveAdminKey(res.key, keep); setErr(false); onOk(); } else { setErr(true); } }
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6">
       <div className="text-3xl font-bold text-indigo-600 mb-1">Reactivify</div>
@@ -2705,6 +2726,9 @@ function AdminGate({onOk,onCancel}){
           placeholder="Password"
           className={"w-full px-4 py-3 rounded-2xl border shadow-sm outline-none "+(err?"border-red-400 focus:border-red-500":"border-slate-200 focus:border-indigo-400")}/>
         {err && <div className="text-xs text-red-500 -mt-1 px-1">Incorrect password. Try again.</div>}
+        <label className="flex items-center gap-2 text-sm text-slate-600 px-1 cursor-pointer select-none">
+          <input type="checkbox" checked={keep} onChange={e=>setKeep(e.target.checked)} className="w-4 h-4 accent-indigo-600"/>
+          Stay signed in on this device</label>
         <button type="submit" disabled={busy}
           className="py-3 rounded-2xl font-semibold shadow-sm bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50">{busy?"Checking...":"Unlock"}</button>
         <button type="button" onClick={onCancel}
@@ -3712,7 +3736,20 @@ function SummaryCards({leads}){
   const booked=leads.filter(l=>/booked/i.test(l.Status||"")).length;
   const followups=leads.filter(l=>/follow/i.test(l.Status||"")||l["Followup Date"]).length;
   const landed=leads.filter(l=>/landed/i.test(l.Status||"")).length;
-  const card=(label,val,color)=>(<div className="bg-white rounded-2xl border border-slate-200 p-4"><div className={"text-2xl font-bold "+(color||"text-slate-800")}>{val}</div><div className="text-xs text-slate-500 mt-1">{label}</div></div>);
+  const when=(l,d,t)=>String(l[d]||"9999")+" "+String(l[t]||"");
+  const lists={
+    "Total leads":leads,
+    "Unassigned":leads.filter(l=>!l["Assigned To"]||l["Assigned To"]==="Team"),
+    "Contacted":leads.filter(l=>l.Status && l.Status!=="New"),
+    // Upcoming meetings first (soonest on top), then past ones (latest on top)
+    "Meetings booked":(function(){ const now=todayISO(); const b=leads.filter(l=>/booked/i.test(l.Status||""));
+      const up=b.filter(l=>String(l["Meeting Date"]||"")>=now).sort((x,y)=>when(x,"Meeting Date","Meeting Time").localeCompare(when(y,"Meeting Date","Meeting Time")));
+      const past=b.filter(l=>String(l["Meeting Date"]||"")<now).sort((x,y)=>when(y,"Meeting Date","Meeting Time").localeCompare(when(x,"Meeting Date","Meeting Time")));
+      return up.concat(past); })(),
+    "Follow-ups":leads.filter(l=>/follow/i.test(l.Status||"")||l["Followup Date"]).sort((x,y)=>when(x,"Followup Date","Followup Time").localeCompare(when(y,"Followup Date","Followup Time"))),
+    "Landed (won)":leads.filter(l=>/landed/i.test(l.Status||""))
+  };
+  const card=(label,val,color)=>(<button onClick={()=>openList(label,lists[label])} title="Click to see these leads" className="text-left bg-white rounded-2xl border border-slate-200 p-4 hover:border-indigo-300 hover:shadow-md transition-all"><div className={"text-2xl font-bold "+(color||"text-slate-800")}>{val}</div><div className="text-xs text-slate-500 mt-1">{label} <span className="text-indigo-500">→</span></div></button>);
   const byCity={}; leads.forEach(l=>{const c=cityGroup(l.City);byCity[c]=(byCity[c]||0)+1;});
   const cityRows=Object.keys(byCity).map(c=>[c,byCity[c]]).sort((a,b)=>b[1]-a[1]);
   return (

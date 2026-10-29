@@ -3573,6 +3573,8 @@ function FunnelDashboard({leads,internNames}){
   useEffect(function(){ try{ localStorage.setItem("reactivify.dashRange", JSON.stringify(range)); }catch(e){} },[range]);
   const [ratio,setRatio]=useState(function(){ try{ return JSON.parse(localStorage.getItem("reactivify.dashRatio")||"null")||{from:"Dialed",to:"Closed"}; }catch(e){ return {from:"Dialed",to:"Closed"}; } });
   useEffect(function(){ try{ localStorage.setItem("reactivify.dashRatio", JSON.stringify(ratio)); }catch(e){} },[ratio]);
+  const [ratioWho,setRatioWho]=useState(function(){ try{ return localStorage.getItem("reactivify.dashRatioWho")||"All"; }catch(e){ return "All"; } });
+  useEffect(function(){ try{ localStorage.setItem("reactivify.dashRatioWho", ratioWho); }catch(e){} },[ratioWho]);
   const [dcat,setDcat]=useState(function(){ try{ return localStorage.getItem("reactivify.dashCat")||"All"; }catch(e){ return "All"; } });
   useEffect(function(){ try{ localStorage.setItem("reactivify.dashCat", dcat); }catch(e){} },[dcat]);
   const [dcity,setDcity]=useState(function(){ try{ return localStorage.getItem("reactivify.dashCity")||"All"; }catch(e){ return "All"; } });
@@ -3626,7 +3628,10 @@ function FunnelDashboard({leads,internNames}){
     const o={name:name}; FUNNEL_STAGES.forEach(function(s){ o[s[0]]= s[0]==="Leads" ? count(mine,s[1]) : dm[s[0]]; }); return o;
   });
   const stageCol=function(n){ const f=FUNNEL_STAGES.find(function(s){ return s[0]===n; }); return f?f[1]:"Timestamp"; };
-  const pctOf=function(a,b){ return team[a]>0? Math.round(team[b]/team[a]*100):0; };
+  const pctOf=function(a,b,src){ src=src||team; return src[a]>0? Math.round(src[b]/src[a]*100):0; };
+  // Custom ratio for the whole team or one member (a removed member falls back to the team).
+  const ratioRow=ratioWho==="All" ? null : rows.find(function(r){ return r.name===ratioWho; });
+  const rsrc=ratioRow||team;
   const presets=[["today","Today"],["7d","Last 7 days"],["30d","Last 30 days"],["month","This month"],["all","All time"]];
   const chain=["Dialed","Conversation","Website Sent","Meeting Booked","Showed up","Closed"];
   const chipCols={"Leads":"text-slate-800","Dialed":"text-indigo-600","Conversation":"text-blue-600","Website Sent":"text-cyan-600","Meeting Booked":"text-green-600","Showed up":"text-emerald-600","Closed":"text-emerald-700"};
@@ -3675,18 +3680,22 @@ function FunnelDashboard({leads,internNames}){
         <span>→</span>
         <select value={ratio.to} onChange={e=>setRatio({from:ratio.from,to:e.target.value})} className="border rounded-lg px-2 py-1 text-sm">
           {FUNNEL_STAGES.map(function(s){ return <option key={s[0]}>{s[0]}</option>; })}</select>
-        <span className="ml-1 text-lg font-bold text-indigo-700">{pctOf(ratio.from,ratio.to)}%</span>
-        <span className="text-[11px] text-slate-500">({team[ratio.to]} of {team[ratio.from]})</span>
+        <span className="ml-1 text-lg font-bold text-indigo-700">{pctOf(ratio.from,ratio.to,rsrc)}%</span>
+        <span className="text-[11px] text-slate-500">({rsrc[ratio.to]} of {rsrc[ratio.from]})</span>
+        <select value={ratioRow?ratioWho:"All"} onChange={e=>setRatioWho(e.target.value)} className="ml-auto border rounded-lg px-2 py-1 text-sm bg-white">
+          <option value="All">👥 Everyone (team)</option>
+          {internNames.map(function(n){ return <option key={n} value={n}>👤 {n}</option>; })}</select>
       </div>
 
       <div className="overflow-x-auto no-scrollbar">
         <table className="w-full text-sm">
           <thead className="text-slate-500 text-left"><tr>
-            <th className="py-1 pr-3">Member</th>{FUNNEL_STAGES.map(function(s){ return <th key={s[0]} className="py-1 px-2">{s[0]==="Meeting Booked"?"Booked":s[0]==="Conversation"?"Convos":s[0]==="Website Sent"?"Website":s[0]}</th>; })}</tr></thead>
+            <th className="py-1 pr-3">Member</th>{FUNNEL_STAGES.map(function(s){ return <th key={s[0]} className="py-1 px-2">{s[0]==="Meeting Booked"?"Booked":s[0]==="Conversation"?"Convos":s[0]==="Website Sent"?"Website":s[0]}</th>; })}<th className="py-1 px-2 text-indigo-700" title={ratio.from+" → "+ratio.to}>Ratio</th></tr></thead>
           <tbody>
             {rows.map(function(r){ return <tr key={r.name} className="border-t border-slate-100">
               <td className="py-2 pr-3 font-medium">{r.name}</td>
               {FUNNEL_STAGES.map(function(s){ return <td key={s[0]} className={"py-2 px-2 "+(s[0]==="Closed"?"font-semibold":s[0]==="Leads"?"text-slate-500":"")}>{r[s[0]]}</td>; })}
+              <td className="py-2 px-2 font-semibold text-indigo-700">{pctOf(ratio.from,ratio.to,r)}%</td>
             </tr>; })}
           </tbody>
         </table>

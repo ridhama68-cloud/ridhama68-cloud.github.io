@@ -211,13 +211,28 @@ function applyPending(list){
   _outbox.forEach(function(p){ if(p.action==="upsert" && p.lead && p.lead.ID) by[p.lead.ID]=Object.assign(by[p.lead.ID]||{}, _patchFor(p)); });
   return list.map(function(l){ return by[l.ID] ? Object.assign({},l,by[l.ID]) : l; });
 }
+/* NOT A DIAL (dial:false). The backend ignores the flag and adds a call to whatever it logs, so
+   once such a save succeeds, its place in the queue goes to an unlogStat that takes back only the
+   call: NOT_A_DIAL is never a real result, so the result's own count stays. "Showed Up" and "Dumped"
+   are left alone, because the dial formulas already subtract them. */
+const NOT_A_DIAL="(not a dial)";
+function isClosing(status){ return status==="Landed" || status==="Lost"; }
+function dialBack(saved,res){
+  const d=String((res.lead && res.lead["Last Follow-up Date"]) || "");   // the server's own "today"
+  return {action:"unlogStat", opId:"nd-"+saved.opId, intern:saved.logStat.intern, outcome:NOT_A_DIAL,
+    day:/^\d{4}-\d{2}-\d{2}$/.test(d) ? d : istDayOf(Date.now())};
+}
 function saveInBackground(payload){
   const called=!payload.fix && payload.logStat && payload.logStat.outcome;
   const isDial=called && payload.logStat.dial!==false;
   if(isDial && !payload.opId && payload.lead && payload.lead.ID) payload.opId=linkedCallId(payload.lead.ID);
   payload.opId = payload.opId || newOpId();
   _localPatch(payload);
-  if(called) gameBump(payload.logStat.intern, payload.logStat.outcome, payload.opId);
+  if(called && !isDial && !/^(Showed Up|Dumped)$/.test(payload.logStat.outcome)){
+    payload.logStat.intern=String(payload.logStat.intern||"").trim();
+    if(payload.logStat.intern) payload.noDial=true;   // with no one assigned nothing is counted
+  }
+  if(called) gameBump(payload.logStat.intern, payload.logStat.outcome, payload.opId, payload);
   if(isDial) logCallEvent(payload.logStat.intern, payload.logStat.outcome, payload.opId);
   _outbox.push(payload); _outboxStuck=false; _outboxNotify();
   flushOutbox();
@@ -231,6 +246,7 @@ async function flushOutbox(){
     const res=await apiPost(p);
     if(res && res.ok!==false){
       _outbox.shift(); fails=0; gameConfirm(p.opId);
+      if(p.noDial) _outbox.unshift(dialBack(p,res));
       if(p.lead && (p.lead["Meeting Date"] || /booked/i.test(p.lead.Status||""))) _needFull=true;
       _outbox.forEach(function(q){ if(q.action==="upsert" && q.lead && p.lead && q.lead.ID===p.lead.ID) _localPatch(q); });
       _outboxNotify(); continue;
@@ -381,7 +397,7 @@ function gameLoad(force){
     if(r && r.ok){
       _gDaily=r.daily||{}; _gLastLoad=Date.now();
       try{ teamHypeCheck(); }catch(e){}
-      for(let i=_gPending.length-1;i>=0;i--){ const b=_gPending[i]; if(b.confirmedAt && b.confirmedAt<started) _gPending.splice(i,1); }
+      for(let i=_gPending.length-1;i>=0;i--){ const b=_gPending[i]; if(b.confirmedAt && b.confirmedAt<=started) _gPending.splice(i,1); }
       _gEmit();
     }
   }).catch(function(){}).then(function(){
@@ -401,7 +417,7 @@ function gameDaily(){
     Object.keys(day).forEach(function(k){ if(k.toLowerCase()===String(b.intern).toLowerCase()) key=k; });
     const rec=Object.assign({calls:0}, day[key]||{});
     const by=b.by||1;
-    rec.calls=Math.max(0,(rec.calls||0)+by);
+    if(!b.noDial) rec.calls=Math.max(0,(rec.calls||0)+by);
     rec[b.outcome]=Math.max(0,(rec[b.outcome]||0)+by);
     day[key]=rec;
   });
@@ -413,10 +429,12 @@ function gameShift(intern,day,outcome,opId,by){
   _gPending.push({intern:intern, outcome:outcome, day:day, opId:opId, by:by, confirmedAt:0});
   _gEmit();
 }
-function gameBump(intern,outcome,opId){
+function gameBump(intern,outcome,opId,opt){
   if(!intern || !outcome) return;
-  _gPending.push({intern:intern, outcome:outcome, day:todayISO(), opId:opId, confirmedAt:0});
-  const one={calls:1}; one[outcome]=1;
+  const noDial=!!(opt && opt.noDial);
+  _gPending.push({intern:intern, outcome:outcome, day:todayISO(), opId:opId, noDial:noDial, confirmedAt:0});
+  if(opt && opt.quiet){ _gEmit(); return; }   // board and close-out moves: counted, no pops
+  const one={calls:noDial?0:1}; one[outcome]=1;
   const s=gRecStats(one);
   if(s.points>0){ const now=Date.now(); _combo.n=(now-_combo.at<COMBO_MS)?_combo.n+1:1; _combo.at=now; }
   _gEmit();
@@ -1388,7 +1406,7 @@ function lastCallOf(leadId){
   },null);
 }
 // What a status change will do. pick = the button tapped, or null for the suggested one.
-function useCallChoice(leadId,changed){
+function useCallChoice(leadId,changed,status){
   const [pick,setPick]=useState(null);
   const [,setVer]=useState(0);
   useEffect(function(){
@@ -1396,13 +1414,16 @@ function useCallChoice(leadId,changed){
     _callEvSubs.push(setVer); loadCallEvents();
     return function(){ const i=_callEvSubs.indexOf(setVer); if(i>=0) _callEvSubs.splice(i,1); };
   },[changed]);
-  const last=changed?lastCallOf(leadId):null;
-  return {last:last, setPick:setPick, mode:pick||(last && Date.now()-last.t<SAME_CALL_MS ? "same" : "new")};
+  useEffect(function(){ setPick(null); },[status]);
+  const last=changed?lastCallOf(leadId):null, closing=isClosing(status);
+  // Closing never replaces a result (say, Meeting Booked) unless Same call is tapped.
+  const suggested=(!closing && last && Date.now()-last.t<SAME_CALL_MS) ? "same" : "new";
+  return {last:last, setPick:setPick, closing:closing, status:status, mode:(closing && !last) ? "new" : (pick||suggested)};
 }
 function saveStatusChange(leadPatch,intern,status,choice){
   if(choice.mode==="new"){
     const p={action:"upsert", lead:leadPatch, logStat:{intern:intern||"", outcome:status}};
-    if(status==="Lost") p.logStat.dial=false;   // same as the call card
+    if(isClosing(status)) p.logStat.dial=false;   // same as the call card
     saveInBackground(p); return;
   }
   const last=choice.last;
@@ -1421,7 +1442,10 @@ function saveStatusChange(leadPatch,intern,status,choice){
 function CallChoice({choice,intern}){
   const last=choice.last, same=choice.mode==="same";
   const at=last ? new Date(last.t).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"}) : "";
-  const hint=!same
+  const closing=choice.closing;
+  const hint=(!same && closing)
+    ? (intern ? "Counts as "+choice.status+" for "+intern+", without adding a dial." : "No one is assigned, so this won't be counted for anyone.")
+    : !same
     ? (intern ? "Counts as another call for "+intern+"." : "No one is assigned, so this call won't be counted for anyone.")
     : last ? "Replaces “"+last.outcome+"” from "+at+". Not counted as another call."
     : "Only the status changes. There's no call from today on this lead to correct.";
@@ -1431,7 +1455,7 @@ function CallChoice({choice,intern}){
   }
   return (
     <div className="mt-1.5 space-y-1">
-      <div className="flex gap-1.5 flex-wrap">{btn("new","📞 New call")}{btn("same","✏️ Same call")}</div>
+      {(!closing || last) && <div className="flex gap-1.5 flex-wrap">{btn("new", closing?"🏁 Just close":"📞 New call")}{btn("same","✏️ Same call")}</div>}
       <div className="text-[11px] text-slate-500">{hint}</div>
     </div>
   );
@@ -1480,7 +1504,7 @@ function Analytics({me,names,isAdmin}){
       let s=gZero();
       Object.keys(daily[d]||{}).forEach(function(n){ if(n!=="Team" && match(n)) s=gAdd(s, gRecStats(daily[d][n])); });
       trend.push({d:d, s:s});
-      if(s.dials<=0) return;
+      if(s.dials<=0){ tot.meet+=s.meet; tot.web+=s.web; return; }
       const w=wd[new Date(d+"T00:00:00").getDay()];
       w.days++; w.dials+=s.dials; w.convos+=s.convos; w.meet+=s.meet; w.web+=s.web;
       tot.days++; tot.dials+=s.dials; tot.convos+=s.convos; tot.meet+=s.meet; tot.web+=s.web;
@@ -1618,7 +1642,7 @@ function Analytics({me,names,isAdmin}){
             <thead><tr className="text-left text-[11px] uppercase text-slate-400"><th className="py-1">Name</th><th>Days</th><th>Dials</th><th>Avg/day</th><th>Pick-up</th><th>Meetings</th><th>Per 100</th></tr></thead>
             <tbody>{people.map(function(n){
               let s=gZero(), days=0;
-              Object.keys(daily||{}).forEach(function(d){ if(d<fromIso||d>today) return; const x=gRecStats(gRec(daily[d],n)); if(x.dials>0){ days++; s=gAdd(s,x); } });
+              Object.keys(daily||{}).forEach(function(d){ if(d<fromIso||d>today) return; const x=gRecStats(gRec(daily[d],n)); if(x.dials>0) days++; s=gAdd(s,x); });
               if(!s.dials) return null;
               return <tr key={n} className="border-t border-slate-100"><td className="py-1.5 font-semibold flex items-center gap-2"><Avatar name={n} size={22}/>{n}</td><td>{days}</td><td className="tabular-nums">{s.dials}</td><td className="tabular-nums">{Math.round(s.dials/days)}</td><td className="tabular-nums">{pct(s.convos,s.dials)}%</td><td className="tabular-nums">{s.meet}</td><td className="tabular-nums">{(s.meet/s.dials*100).toFixed(1)}</td></tr>;
             })}</tbody>
@@ -3113,10 +3137,11 @@ function CloseItem({item,refresh,notify}){
     let patch={ID:l.ID, Status:status};
     if(status==="Lost"){ const info=await askLost(l); if(!info) return; patch=lostPatch(l,info,l["Assigned To"]); }
     if(status==="Landed"){ const amt=askAmount("🏆 Client landed! Deal value in ₹ (optional):"); if(amt) patch.Notes=noteWith(l,"💰 Landed "+inr(amt),l["Assigned To"]); }
-    setBusy(true);
-    // dial:false — closing a meeting isn't a fresh dial, so it shouldn't inflate the dial count.
-    const res=await apiPost({action:"upsert", lead:patch, logStat:{intern:l["Assigned To"]||"", outcome:status, dial:false}});
-    setBusy(false); if(res.ok){ notify("Closed: "+status); if(status==="Landed") celebrate("Landed"); refreshLight(); } else notify("Failed: "+res.error);
+    // Closing isn't a dial. Dumped has no tally of its own (it is only ever subtracted), so it logs nothing.
+    const p={action:"upsert", lead:patch, quiet:status!=="Landed"};
+    if(status==="Dumped") patch["Last Follow-up Date"]=todayISO();
+    else p.logStat={intern:l["Assigned To"]||"", outcome:status, dial:false};
+    saveInBackground(p); notify("Closed: "+status);
   }
   async function quote(){
     const amt=askAmount("💸 Quote amount in ₹:"); if(!amt) return;
@@ -3254,7 +3279,7 @@ function DailyActivity({leads,internNames}){
     const dd = daily && daily[day] && daily[day][name];
     if(dd){
       const by={}; Object.keys(dd).forEach(function(k){ if(k!=="calls") by[k]=dd[k]; });
-      return { name:name, count:dd.calls||0, by:by, real:true };
+      return { name:name, count:Math.max(0,(dd.calls||0)-(dd["Showed Up"]||0)), by:by, real:true };
     }
     const mine=leads.filter(function(l){ return String(l["Assigned To"]||"").trim().toLowerCase()===name.toLowerCase(); });
     const worked=mine.filter(function(l){ return day && String(l["Last Follow-up Date"]||"").indexOf(day)>=0; });
@@ -3275,7 +3300,7 @@ function DailyActivity({leads,internNames}){
         {rows.map(function(r){
           return <div key={r.name} className="flex items-center justify-between text-sm border-t border-slate-100 py-1.5 first:border-0">
             <span className="font-medium">{r.name}</span>
-            <span className="text-right"><b className="text-base">{r.count}</b>{r.count>0 && <span className="text-slate-400 text-[11px] ml-2">{Object.keys(r.by).map(function(k){ return k+" "+r.by[k]; }).join(" · ")}</span>}</span>
+            <span className="text-right"><b className="text-base">{r.count}</b>{Object.keys(r.by).length>0 && <span className="text-slate-400 text-[11px] ml-2">{Object.keys(r.by).map(function(k){ return k+" "+r.by[k]; }).join(" · ")}</span>}</span>
           </div>;
         })}
       </div>
@@ -3645,11 +3670,13 @@ function PipelineBoard({leads,refresh,notify,members}){
   scoped.forEach(function(l){ const c=pipeStage(l); if(c) byCol[c].push(l); });
   async function apply(l,stage,extra){
     const p={action:"upsert", lead:Object.assign({ID:l.ID},extra||{})};
-    if(stage==="Website Sent"){ p.lead.Status="Website Sent"; p.logStat={intern:l["Assigned To"]||"", outcome:"Website Sent"}; }
-    else if(stage==="Meeting Booked"){ p.lead.Status="Meeting Booked"; p.logStat={intern:l["Assigned To"]||"", outcome:"Meeting Booked"}; }
+    if(stage==="Website Sent"){ p.lead.Status="Website Sent"; p.logStat={intern:l["Assigned To"]||"", outcome:"Website Sent", dial:false}; }
+    else if(stage==="Meeting Booked"){ p.lead.Status="Meeting Booked"; p.logStat={intern:l["Assigned To"]||"", outcome:"Meeting Booked", dial:false}; }
     else if(stage==="Showed up"){ if(!/meeting booked/i.test(l.Status||"")) p.lead.Status="Meeting Booked"; p.logStat={intern:l["Assigned To"]||"", outcome:"Showed Up", dial:false}; }
     else if(stage==="Closed"){ p.lead.Status="Landed"; p.logStat={intern:l["Assigned To"]||"", outcome:"Landed", dial:false}; }
     else if(stage==="Working"){ p.lead.Status="Interested"; }
+    // Showed up waits for the server: its column needs the date the server stamps.
+    if(stage!=="Showed up"){ p.quiet=true; saveInBackground(p); notify("→ "+stage); return; }
     const res=await apiPost(p); if(res.ok){ notify("→ "+stage); refreshLight(); } else notify("Failed: "+(res.error||""));
   }
   function move(l,stage){ if(!stage||stage===pipeStage(l)) return; if(stage==="Meeting Booked"){ setDt({date:l["Meeting Date"]||todayISO(), time:l["Meeting Time"]||"11:00"}); setBook({lead:l}); } else apply(l,stage); }
@@ -3841,7 +3868,7 @@ function FunnelDashboard({leads,internNames}){
           </tbody>
         </table>
       </div>
-      <div className="text-[11px] text-slate-400">Dialed / Convos / Website / Booked / Showed up / Closed count every call logged in the range (redials included), from the same log as "Calls per day". Dumped is not a dial; Not Answering and Voicemail are not conversations. The niche / city filter only narrows "Leads". The call log keeps the last 120 days.</div>
+      <div className="text-[11px] text-slate-400">Dialed / Convos / Website / Booked / Showed up / Closed count every call logged in the range (redials included), from the same log as "Calls per day". Dumped, Showed up, Landed, Lost, closing from Close as… and Pipeline moves don't add dials; Not Answering and Voicemail are not conversations. The niche / city filter only narrows "Leads". The call log keeps the last 120 days.</div>
     </div>
   );
 }
@@ -4115,7 +4142,7 @@ function EditLead({lead,onClose,refresh,notify,who}){
   const isFollow=/schedule follow-up/i.test(f.Status);
   const statusChanged=f.Status!==(lead.Status||"New");
   const countable=statusChanged && f.Status!=="New";   // back to New is a reset, never a call
-  const choice=useCallChoice(lead.ID,countable);
+  const choice=useCallChoice(lead.ID,countable,f.Status);
   function edited(next){ setTouched(true); setF(next); }
   function editedWhen(next){ setTouched(true); setDt(next); }
   function cancel(){ if(note.trim() && !confirm("Discard the note you typed?")) return; onClose(); }
@@ -4868,7 +4895,7 @@ function InternView({user,leads,stats,refresh,notify,actor}){
   const dueCount=useMemo(()=>pipelineEvents(mineCat).filter(e=>e.when.getTime()<=Date.now()).length,[mineCat]);
   // Live "calls I made today" counter — refetched whenever leads refresh (i.e. after each logged call).
   const [callsToday,setCallsToday]=useState(null);
-  useEffect(function(){ apiGet("getDailyCalls").then(function(r){ if(r&&r.ok){ const day=todayISO(); const d=r.daily&&r.daily[day]&&r.daily[day][user]; setCallsToday(d?(d.calls||0):0); } }).catch(function(){}); },[user,leads]);
+  useEffect(function(){ apiGet("getDailyCalls").then(function(r){ if(r&&r.ok){ const day=todayISO(); const d=r.daily&&r.daily[day]&&r.daily[day][user]; setCallsToday(d?Math.max(0,(d.calls||0)-(d["Showed Up"]||0)):0); } }).catch(function(){}); },[user,leads]);
   const emptyMsg = fday ? "No leads worked on that date." : (sel.indexOf("fresh")>=0 ? "All caught up for today. 🎉 Fresh leads reset tomorrow — or pick another filter above." : "No leads in this filter.");
 
   return (
@@ -4969,7 +4996,7 @@ function InternListItem({l,refresh,notify,onEdit,actor,user}){
   const statusChanged = pendingStatus && pendingStatus!==statusOf(l);
   const dirty = statusChanged || !!note.trim();
   const countable = !!statusChanged && pendingStatus!=="New";
-  const choice = useCallChoice(l.ID,countable);
+  const choice = useCallChoice(l.ID,countable,pendingStatus);
   // Follow a status saved elsewhere (Edit lead, refresh), or this row would save the old one back.
   useEffect(()=>{ setPendingStatus(statusOf(l)); },[statusOf(l)]);
 
@@ -5153,7 +5180,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
     const payload={action:"upsert", lead:patch};
     // count this as a logged call outcome (accurate cumulative stats)
     if(effOutcome && !opts.noStat) payload.logStat={intern:user, outcome:effOutcome};
-    if(payload.logStat && effOutcome==="Lost") payload.logStat.dial=false;   // closing after a meeting, not a new dial
+    if(payload.logStat && isClosing(effOutcome)) payload.logStat.dial=false;   // closing a deal, not a new dial
     saveInBackground(payload);
     setSaving(false);
     notify(opts.msg||"Saved"); if(!opts.stay) onNext();

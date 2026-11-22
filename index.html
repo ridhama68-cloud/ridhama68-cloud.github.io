@@ -130,6 +130,7 @@ async function apiGet(action, extraQuery){
 // Set once by App() so apiPost can optimistically update the shared leads list
 // without every call site needing to know about it.
 let _setLeadsRef = null;
+let _leadsNow = [];  // the current list, for appending to a lead that was opened earlier
 function _optimisticPatch(payload, res){
   if(!_setLeadsRef || !res || res.ok===false) return;
   try{
@@ -186,6 +187,8 @@ const OUTBOX_KEY="reactivify.outbox";
 let _outbox=[]; try{ _outbox=JSON.parse(localStorage.getItem(OUTBOX_KEY)||"[]")||[]; }catch(e){ _outbox=[]; }
 let _flushing=false, _outboxStuck=false, _needFull=false;
 let _toastRef=null, _drainedLight=null, _drainedFull=null;
+// App's refreshLight, for components outside App.
+function refreshLight(){ if(_drainedLight) return _drainedLight(); }
 const _outboxSubs=[];
 function _outboxNotify(){
   try{ localStorage.setItem(OUTBOX_KEY, JSON.stringify(_outbox)); }catch(e){}
@@ -1646,7 +1649,7 @@ function Hl({text,q}){
 let _openSearch=null, _openList=null;
 function openSearch(){ if(_openSearch) _openSearch(); }
 function openList(title,list){ if(_openList) _openList(title,list); }
-function SearchMount({leads,refresh,notify}){
+function SearchMount({leads,refresh,notify,who}){
   const [open,setOpen]=useState(false);
   useEffect(function(){
     _openSearch=function(){ setOpen(true); };
@@ -1660,9 +1663,9 @@ function SearchMount({leads,refresh,notify}){
     return function(){ window.removeEventListener("keydown",onKey); _openSearch=null; _openList=null; };
   },[]);
   if(!open) return null;
-  return <SearchOverlay leads={leads} preset={open===true?null:open} onClose={function(){ setOpen(false); }} refresh={refresh} notify={notify}/>;
+  return <SearchOverlay leads={leads} who={who} preset={open===true?null:open} onClose={function(){ setOpen(false); }} refresh={refresh} notify={notify}/>;
 }
-function SearchOverlay({leads,onClose,refresh,notify,preset}){
+function SearchOverlay({leads,onClose,refresh,notify,preset,who}){
   const [q,setQ]=useState("");
   const [scope,setScope]=useState(function(){ try{ return localStorage.getItem("reactivify.searchScope")||"both"; }catch(e){ return "both"; } });
   const [open,setOpen]=useState(null);     // lead shown in detail
@@ -1751,7 +1754,7 @@ function SearchOverlay({leads,onClose,refresh,notify,preset}){
           </div>
         </div>}
       </div>
-      {edit && <div onClick={function(e){ e.stopPropagation(); }}><EditLead lead={edit} onClose={function(){ setEdit(null); }} refresh={refresh} notify={notify}/></div>}
+      {edit && <div onClick={function(e){ e.stopPropagation(); }}><EditLead lead={edit} who={who} onClose={function(){ setEdit(null); }} refresh={refresh} notify={notify}/></div>}
     </div>
   );
 }
@@ -2333,6 +2336,7 @@ function App(){
   const [adminAuthed,setAdminAuthed]=useState(false);
   const [leads,setLeads]=useState([]);
   _setLeadsRef = setLeads;
+  _leadsNow = leads;
   const [interns,setInterns]=useState(()=>{ try{ const c=localStorage.getItem("reactivify_interns"); return c?JSON.parse(c):[]; }catch(e){ return []; } });
   _gameTeam = interns;
   const [stats,setStats]=useState({});
@@ -2442,7 +2446,7 @@ function App(){
       <GameFX/>
       <AdminKeyPrompt/>
       <LostPrompt/>
-      <SearchMount leads={isAdmin ? leads : leads.filter(function(l){ return String(l["Assigned To"]||"").trim().toLowerCase()===String(user||"").toLowerCase(); })} refresh={refresh} notify={notify}/>
+      <SearchMount who={user} leads={isAdmin ? leads : leads.filter(function(l){ return String(l["Assigned To"]||"").trim().toLowerCase()===String(user||"").toLowerCase(); })} refresh={refresh} notify={notify}/>
       <Header user={user} isAdmin={isAdmin} session={session}
         onSwitch={()=>{ if(isAdmin){ clearAdminKey(); setAdminAuthed(false); setUser(null); } else setLogoutOpen(true); }} onRefresh={refresh}
         loading={loading} notifPerm={notifPerm} onEnableNotif={askNotif}/>
@@ -3981,7 +3985,12 @@ function AdminLeadTable({leads,internNames,refresh,notify}){
   );
 }
 
-function EditLead({lead,onClose,refresh,notify}){
+function EditLead({lead,onClose,refresh,notify,who}){
+  const [note,setNote]=useState("");
+  const [noteOpen,setNoteOpen]=useState(false);
+  const [touched,setTouched]=useState(false);   // any field other than the note
+  const live=_leadsNow.find(function(l){ return l.ID===lead.ID; })||lead;
+  const history=String(live.Notes||"").split("\n").filter(function(x){ return x.trim() && !/^Maps: https?:/.test(x.trim()); }).reverse();
   const [f,setF]=useState({Clinic:lead.Clinic||"",Name:lead.Name||"",Phone:lead.Phone||"",Email:lead.Email||"",City:lead.City||"",Status:lead.Status||"New"});
   const [dt,setDt]=useState({
     date: lead["Meeting Date"]||lead["Followup Date"]||todayISO(),
@@ -3990,31 +3999,55 @@ function EditLead({lead,onClose,refresh,notify}){
   const [saving,setSaving]=useState(false);
   const isMeeting=/meeting booked/i.test(f.Status);
   const isFollow=/schedule follow-up/i.test(f.Status);
+  function edited(next){ setTouched(true); setF(next); }
+  function editedWhen(next){ setTouched(true); setDt(next); }
+  function cancel(){ if(note.trim() && !confirm("Discard the note you typed?")) return; onClose(); }
   async function save(){
+    if(saving) return;
+    const text=note.trim();
+    // A note on its own writes only Notes: re-sending the date would re-arm the follow-up reminder email.
+    const noteOnly=!!text && !touched;
     setSaving(true);
-    const patch=Object.assign({ID:lead.ID}, f);
-    if(isMeeting){ patch["Meeting Date"]=dt.date; patch["Meeting Time"]=dt.time; }
+    const patch=noteOnly ? {ID:lead.ID} : Object.assign({ID:lead.ID}, f);
+    if(text) patch.Notes=noteWith(live, text, who);
+    if(noteOnly){ /* keep status and dates as they are */ }
+    else if(isMeeting){ patch["Meeting Date"]=dt.date; patch["Meeting Time"]=dt.time; }
     else if(isFollow){ patch["Followup Date"]=dt.date; patch["Followup Time"]=dt.time; patch["Followup Sent"]=""; }
+    // Behind a queued save of the same lead, join the queue so that save can't overwrite this note.
+    if(text && _outbox.some(function(p){ return p.lead && p.lead.ID===lead.ID; })){
+      saveInBackground({action:"upsert", lead:patch}); notify("Saved ✓"); onClose(); return;
+    }
     const res=await apiPost({action:"upsert", lead:patch});
     setSaving(false);
-    if(res.ok){ notify(isMeeting?"Meeting saved ✓":isFollow?"Follow-up saved ✓":"Lead updated"); onClose(); refreshLight(); } else notify("Failed: "+res.error);
+    if(res.ok){ notify(noteOnly?"Note saved ✓":isMeeting?"Meeting saved ✓":isFollow?"Follow-up saved ✓":"Lead updated"); onClose(); refreshLight(); } else notify("Failed: "+res.error);
   }
-  return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl p-4 w-full max-w-sm space-y-2" onClick={e=>e.stopPropagation()}>
+  return ReactDOM.createPortal(
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-[58] p-4" onClick={e=>{ e.stopPropagation(); cancel(); }}>
+      <div className="bg-white rounded-2xl p-4 w-full max-w-sm max-h-full overflow-y-auto space-y-2" onClick={e=>e.stopPropagation()}>
         <div className="font-semibold">Edit lead</div>
         {[["Clinic","Clinic name"],["Name","Owner name"],["Phone","Phone"],["Email","Owner email"],["City","City"]].map(fld=>(
           <div key={fld[0]}>
             <label className="text-[11px] text-slate-500">{fld[1]}</label>
-            <input value={f[fld[0]]} onChange={e=>setF(Object.assign({},f,{[fld[0]]:e.target.value}))} className="w-full border rounded-lg px-3 py-2 text-sm"/>
+            <input value={f[fld[0]]} onChange={e=>edited(Object.assign({},f,{[fld[0]]:e.target.value}))} className="w-full border rounded-lg px-3 py-2 text-sm"/>
           </div>
         ))}
         <div>
           <label className="text-[11px] text-slate-500">Status</label>
-          <select value={f.Status} onChange={e=>setF(Object.assign({},f,{Status:e.target.value}))} className="w-full border rounded-lg px-3 py-2 text-sm">
-            {["New"].concat(OUTCOMES).map(o=><option key={o}>{o}</option>)}
-          </select>
+          <div className="flex gap-2">
+            <select value={f.Status} onChange={e=>edited(Object.assign({},f,{Status:e.target.value}))} className="flex-1 min-w-0 border rounded-lg px-3 py-2 text-sm">
+              {["New"].concat(OUTCOMES).map(o=><option key={o}>{o}</option>)}
+            </select>
+            {!noteOpen && <button onClick={()=>setNoteOpen(true)} className="shrink-0 text-sm text-indigo-700 px-3 py-2 rounded-lg bg-indigo-50">📝 Note{history.length?" ("+history.length+")":""}</button>}
+          </div>
         </div>
+        {noteOpen &&
+          <div className="space-y-1">
+            <input value={note} onChange={e=>setNote(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter" && note.trim()) save(); }} placeholder="Type a note…" className="w-full border rounded-lg px-3 py-2 text-sm" autoFocus/>
+            {history.length>0 &&
+              <div className="max-h-28 overflow-y-auto bg-slate-50 rounded-lg px-2 py-1 space-y-1">
+                {history.map(function(x,i){ return <div key={i} className="text-[11px] text-slate-500 break-words">{x}</div>; })}
+              </div>}
+          </div>}
         <div>
           <label className="text-[11px] text-slate-500">Lead grade (A green, B yellow, C orange)</label>
           <PriorityRating lead={lead} refresh={refresh} notify={notify}/>
@@ -4027,16 +4060,16 @@ function EditLead({lead,onClose,refresh,notify}){
           <div className="bg-indigo-50 rounded-lg p-2 space-y-1">
             <label className="text-[11px] font-medium text-indigo-700">{isMeeting?"Meeting":"Follow-up"} date & time</label>
             <div className="flex gap-2">
-              <input type="date" value={dt.date} onChange={e=>setDt(Object.assign({},dt,{date:e.target.value}))} className="border rounded-lg px-2 py-1 text-sm flex-1"/>
-              <input type="time" value={dt.time} onChange={e=>setDt(Object.assign({},dt,{time:e.target.value}))} className="border rounded-lg px-2 py-1 text-sm flex-1"/>
+              <input type="date" value={dt.date} onChange={e=>editedWhen(Object.assign({},dt,{date:e.target.value}))} className="border rounded-lg px-2 py-1 text-sm flex-1"/>
+              <input type="time" value={dt.time} onChange={e=>editedWhen(Object.assign({},dt,{time:e.target.value}))} className="border rounded-lg px-2 py-1 text-sm flex-1"/>
             </div>
           </div>}
         <div className="flex gap-2 pt-1">
           <button onClick={save} disabled={saving} className="flex-1 py-2 rounded-lg bg-indigo-600 text-white text-sm disabled:opacity-40">{saving?"Saving…":"Save"}</button>
-          <button onClick={onClose} className="px-3 py-2 rounded-lg bg-white border text-sm">Cancel</button>
+          <button onClick={cancel} className="px-3 py-2 rounded-lg bg-white border text-sm">Cancel</button>
         </div>
       </div>
-    </div>
+    </div>, document.body
   );
 }
 
@@ -4894,7 +4927,7 @@ function InternList({mine,refresh,notify,actor,user}){
   const shown=mine.slice(0,limit);
   return (
     <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-      {edit && <EditLead lead={edit} onClose={()=>setEdit(null)} refresh={refresh} notify={notify}/>}
+      {edit && <EditLead lead={edit} who={actor||user} onClose={()=>setEdit(null)} refresh={refresh} notify={notify}/>}
       <div className="px-4 py-2 text-sm text-slate-500 border-b">{mine.length} shown · tap 📞 to call, 📍 for map, ✎ to edit</div>
       {mine.length===0
         ? <div className="p-8 text-center text-sm text-slate-400">No leads in this view.</div>

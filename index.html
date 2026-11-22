@@ -212,10 +212,13 @@ function applyPending(list){
   return list.map(function(l){ return by[l.ID] ? Object.assign({},l,by[l.ID]) : l; });
 }
 function saveInBackground(payload){
+  const called=!payload.fix && payload.logStat && payload.logStat.outcome;
+  const isDial=called && payload.logStat.dial!==false;
+  if(isDial && !payload.opId && payload.lead && payload.lead.ID) payload.opId=linkedCallId(payload.lead.ID);
   payload.opId = payload.opId || newOpId();
   _localPatch(payload);
-  if(payload.logStat && payload.logStat.outcome) gameBump(payload.logStat.intern, payload.logStat.outcome, payload.opId);
-  if(payload.logStat && payload.logStat.outcome && payload.logStat.dial!==false) logCallEvent(payload.logStat.intern, payload.logStat.outcome, payload.opId);
+  if(called) gameBump(payload.logStat.intern, payload.logStat.outcome, payload.opId);
+  if(isDial) logCallEvent(payload.logStat.intern, payload.logStat.outcome, payload.opId);
   _outbox.push(payload); _outboxStuck=false; _outboxNotify();
   flushOutbox();
 }
@@ -397,13 +400,19 @@ function gameDaily(){
     let key=b.intern;
     Object.keys(day).forEach(function(k){ if(k.toLowerCase()===String(b.intern).toLowerCase()) key=k; });
     const rec=Object.assign({calls:0}, day[key]||{});
-    rec.calls=(rec.calls||0)+1;
-    rec[b.outcome]=(rec[b.outcome]||0)+1;
+    const by=b.by||1;
+    rec.calls=Math.max(0,(rec.calls||0)+by);
+    rec[b.outcome]=Math.max(0,(rec[b.outcome]||0)+by);
     day[key]=rec;
   });
   return out;
 }
 function gameConfirm(opId){ _gPending.forEach(function(b){ if(b.opId===opId && !b.confirmedAt) b.confirmedAt=Date.now(); }); }
+// Same call: moves a count between results, without pops or sounds.
+function gameShift(intern,day,outcome,opId,by){
+  _gPending.push({intern:intern, outcome:outcome, day:day, opId:opId, by:by, confirmedAt:0});
+  _gEmit();
+}
 function gameBump(intern,outcome,opId){
   if(!intern || !outcome) return;
   _gPending.push({intern:intern, outcome:outcome, day:todayISO(), opId:opId, confirmedAt:0});
@@ -1302,8 +1311,12 @@ const EV_Q="reactivify.evq";
 let _evBusy=false;
 function logCallEvent(intern,outcome,id){
   if(!intern || !outcome) return;
+  queueEvent({d:todayISO(), t:Date.now(), i:intern, o:outcome, id:id||newOpId()});
+}
+function queueEvent(e){
+  rememberCall([e.t, e.i, e.o, e.id]);
   let q=[]; try{ q=JSON.parse(localStorage.getItem(EV_Q)||"[]"); }catch(x){}
-  q.push({d:todayISO(), t:Date.now(), i:intern, o:outcome, id:id||newOpId()});
+  q.push(e);
   try{ localStorage.setItem(EV_Q, JSON.stringify(q.slice(-800))); }catch(x){}
   flushEvents();
 }
@@ -1324,6 +1337,105 @@ function flushEvents(){
 }
 setInterval(flushEvents, 60000);
 setTimeout(flushEvents, 4000);
+
+/* ============ NEW CALL / SAME CALL (status changes in Edit lead and the list) ============ */
+// Calls are linked to their lead through the id in the call-time log: "<random>~<lead ID>".
+// Same call = take the old result out (unlogStat) + log the new one, so the dial total stays put.
+// The time log gets a correction entry "F<random>~<call id>" under the person "~fix", which the
+// Community sync skips (it only imports the intern's own entries), so it isn't a second call there.
+// The backend can only log on today's date, so only today's calls can have their result replaced.
+const SAME_CALL_MS=10*60000, FIX_WHO="~fix";
+let _callEv={}, _callEvAt=0;
+const _callEvSubs=[];
+function istDayOf(t){ return new Date(t+330*60000).toISOString().slice(0,10); }
+function linkedCallId(leadId){
+  // the log cuts ids at 64 characters, and a correction adds 9 to this one
+  return String(leadId).length<=46 ? Math.random().toString(36).slice(2,10).padEnd(8,"0")+"~"+leadId : "";
+}
+function rememberCall(e){ _callEv[e[3]]=e; _callEvSubs.slice().forEach(function(f){ f(Date.now()); }); }
+function loadCallEvents(){
+  if(Date.now()-_callEvAt<15000) return;
+  _callEvAt=Date.now();
+  const day=istDayOf(Date.now());
+  fetch(API_URL+"/events?from="+day+"&to="+day).then(function(r){ return r.json(); }).then(function(r){
+    if(!r || !r.ok || !r.days) return;
+    (r.days[day]||[]).forEach(function(e){ if(e[3]) _callEv[e[3]]=e; });
+    _callEvSubs.slice().forEach(function(f){ f(Date.now()); });
+  }).catch(function(){ _callEvAt=0; });
+}
+// The calls in a list of log entries, each with its latest correction applied.
+function correctedCalls(list){
+  const fix={};
+  (list||[]).forEach(function(e){
+    if(e[1]!==FIX_WHO) return;
+    const base=String(e[3]).slice(String(e[3]).indexOf("~")+1);
+    if(!fix[base] || e[0]>=fix[base][0]) fix[base]=e;
+  });
+  return (list||[]).filter(function(e){ return e[1]!==FIX_WHO; }).map(function(e){
+    const f=fix[e[3]];
+    return {t:e[0], intern:e[1], outcome:f?f[2]:e[2], id:e[3], lastId:f?f[3]:e[3]};
+  });
+}
+// The most recent call on this lead today, or null.
+function lastCallOf(leadId){
+  let queued=[]; try{ queued=JSON.parse(localStorage.getItem(EV_Q)||"[]"); }catch(x){}
+  const all=Object.assign({},_callEv);
+  queued.forEach(function(e){ all[e.id]=[e.t,e.i,e.o,e.id]; });
+  const day=istDayOf(Date.now()), tail="~"+leadId;
+  return correctedCalls(Object.keys(all).map(function(k){ return all[k]; })).reduce(function(best,c){
+    const mine=String(c.id).slice(-tail.length)===tail && istDayOf(c.t)===day;
+    return mine && (!best || c.t>best.t) ? c : best;
+  },null);
+}
+// What a status change will do. pick = the button tapped, or null for the suggested one.
+function useCallChoice(leadId,changed){
+  const [pick,setPick]=useState(null);
+  const [,setVer]=useState(0);
+  useEffect(function(){
+    if(!changed){ setPick(null); return; }
+    _callEvSubs.push(setVer); loadCallEvents();
+    return function(){ const i=_callEvSubs.indexOf(setVer); if(i>=0) _callEvSubs.splice(i,1); };
+  },[changed]);
+  const last=changed?lastCallOf(leadId):null;
+  return {last:last, setPick:setPick, mode:pick||(last && Date.now()-last.t<SAME_CALL_MS ? "same" : "new")};
+}
+function saveStatusChange(leadPatch,intern,status,choice){
+  if(choice.mode==="new"){
+    const p={action:"upsert", lead:leadPatch, logStat:{intern:intern||"", outcome:status}};
+    if(status==="Lost") p.logStat.dial=false;   // same as the call card
+    saveInBackground(p); return;
+  }
+  const last=choice.last;
+  // No linked call from today, or the same result again: only the lead changes.
+  if(!last || last.outcome===status){ saveInBackground({action:"upsert", lead:leadPatch}); return; }
+  const id="F"+Math.random().toString(36).slice(2,9).padEnd(7,"0")+"~"+last.id;
+  const day=istDayOf(last.t);
+  // Take the old result out first, so a dashboard reload after the upsert sees the final numbers.
+  // Both wait in the saved queue, and each is applied only once if retried.
+  saveInBackground({action:"unlogStat", opId:"fix-"+last.lastId, intern:last.intern, outcome:last.outcome, day:day});
+  saveInBackground({action:"upsert", opId:id, lead:leadPatch, logStat:{intern:last.intern, outcome:status}, fix:true});
+  gameShift(last.intern, day, last.outcome, "fix-"+last.lastId, -1);
+  gameShift(last.intern, day, status, id, 1);
+  queueEvent({d:day, t:Date.now(), i:FIX_WHO, o:status, id:id});
+}
+function CallChoice({choice,intern}){
+  const last=choice.last, same=choice.mode==="same";
+  const at=last ? new Date(last.t).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"}) : "";
+  const hint=!same
+    ? (intern ? "Counts as another call for "+intern+"." : "No one is assigned, so this call won't be counted for anyone.")
+    : last ? "Replaces “"+last.outcome+"” from "+at+". Not counted as another call."
+    : "Only the status changes. There's no call from today on this lead to correct.";
+  function btn(mode,label){
+    const on=choice.mode===mode;
+    return <button type="button" aria-pressed={on} onClick={function(){ choice.setPick(mode); }} className={"px-3 py-1 rounded-lg text-xs border font-medium "+(on?"bg-indigo-600 text-white border-indigo-600":"bg-white text-slate-600 border-slate-300")}>{label}</button>;
+  }
+  return (
+    <div className="mt-1.5 space-y-1">
+      <div className="flex gap-1.5 flex-wrap">{btn("new","📞 New call")}{btn("same","✏️ Same call")}</div>
+      <div className="text-[11px] text-slate-500">{hint}</div>
+    </div>
+  );
+}
 
 /* ============ ANALYTICS ============ */
 const WD=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
@@ -1381,7 +1493,8 @@ function Analytics({me,names,isAdmin}){
     const hours={}; AN_HOURS.forEach(function(h){ hours[h]={calls:0, conn:0, meet:0}; });
     const grid={}; let n=0, first=null;
     Object.keys(ev.days||{}).forEach(function(d){
-      (ev.days[d]||[]).forEach(function(e){
+      correctedCalls(ev.days[d]).forEach(function(call){
+        const e=[call.t, call.intern, call.outcome];
         if(!match(e[1])) return;
         const t=new Date(e[0]); const h=t.getHours(), w=t.getDay();
         n++; if(!first || t<first) first=t;
@@ -3990,6 +4103,7 @@ function EditLead({lead,onClose,refresh,notify,who}){
   const [noteOpen,setNoteOpen]=useState(false);
   const [touched,setTouched]=useState(false);   // any field other than the note
   const live=_leadsNow.find(function(l){ return l.ID===lead.ID; })||lead;
+  const intern=live["Assigned To"]||"";
   const history=String(live.Notes||"").split("\n").filter(function(x){ return x.trim() && !/^Maps: https?:/.test(x.trim()); }).reverse();
   const [f,setF]=useState({Clinic:lead.Clinic||"",Name:lead.Name||"",Phone:lead.Phone||"",Email:lead.Email||"",City:lead.City||"",Status:lead.Status||"New"});
   const [dt,setDt]=useState({
@@ -3999,6 +4113,9 @@ function EditLead({lead,onClose,refresh,notify,who}){
   const [saving,setSaving]=useState(false);
   const isMeeting=/meeting booked/i.test(f.Status);
   const isFollow=/schedule follow-up/i.test(f.Status);
+  const statusChanged=f.Status!==(lead.Status||"New");
+  const countable=statusChanged && f.Status!=="New";   // back to New is a reset, never a call
+  const choice=useCallChoice(lead.ID,countable);
   function edited(next){ setTouched(true); setF(next); }
   function editedWhen(next){ setTouched(true); setDt(next); }
   function cancel(){ if(note.trim() && !confirm("Discard the note you typed?")) return; onClose(); }
@@ -4013,8 +4130,9 @@ function EditLead({lead,onClose,refresh,notify,who}){
     if(noteOnly){ /* keep status and dates as they are */ }
     else if(isMeeting){ patch["Meeting Date"]=dt.date; patch["Meeting Time"]=dt.time; }
     else if(isFollow){ patch["Followup Date"]=dt.date; patch["Followup Time"]=dt.time; patch["Followup Sent"]=""; }
-    // Behind a queued save of the same lead, join the queue so that save can't overwrite this note.
-    if(text && _outbox.some(function(p){ return p.lead && p.lead.ID===lead.ID; })){
+    if(countable){ saveStatusChange(patch, intern, f.Status, choice); notify("Saved ✓"); onClose(); return; }
+    // Behind a queued save of the same lead, join the queue so that save can't overwrite this one.
+    if(_outbox.some(function(p){ return p.lead && p.lead.ID===lead.ID; })){
       saveInBackground({action:"upsert", lead:patch}); notify("Saved ✓"); onClose(); return;
     }
     const res=await apiPost({action:"upsert", lead:patch});
@@ -4039,6 +4157,7 @@ function EditLead({lead,onClose,refresh,notify,who}){
             </select>
             {!noteOpen && <button onClick={()=>setNoteOpen(true)} className="shrink-0 text-sm text-indigo-700 px-3 py-2 rounded-lg bg-indigo-50">📝 Note{history.length?" ("+history.length+")":""}</button>}
           </div>
+          {countable && <CallChoice choice={choice} intern={intern}/>}
         </div>
         {noteOpen &&
           <div className="space-y-1">
@@ -4849,6 +4968,10 @@ function InternListItem({l,refresh,notify,onEdit,actor,user}){
   const ln=lastNote(l);
   const statusChanged = pendingStatus && pendingStatus!==statusOf(l);
   const dirty = statusChanged || !!note.trim();
+  const countable = !!statusChanged && pendingStatus!=="New";
+  const choice = useCallChoice(l.ID,countable);
+  // Follow a status saved elsewhere (Edit lead, refresh), or this row would save the old one back.
+  useEffect(()=>{ setPendingStatus(statusOf(l)); },[statusOf(l)]);
 
   // Save status + note TOGETHER in one write. Won't fire on its own for a single
   // field — the user (or the both-filled autosave) triggers it.
@@ -4860,9 +4983,8 @@ function InternListItem({l,refresh,notify,onEdit,actor,user}){
     if(statusChanged) patch.Status=pendingStatus;
     if(note.trim()){ const entry="["+nowStamp()+(actor?(" · "+actor):"")+"] "+note.trim();
       const hist=String(l.Notes||"").trim(); patch.Notes=hist?(hist+"\n"+entry):entry; }
-    const payload={action:"upsert", lead:patch};
-    if(statusChanged) payload.logStat={intern:l["Assigned To"]||"", outcome:pendingStatus};
-    saveInBackground(payload);
+    if(countable) saveStatusChange(patch, l["Assigned To"], pendingStatus, choice);
+    else saveInBackground({action:"upsert", lead:patch});
     savingRef.current=false; setSaving(false);
     setNote(""); setOpen(false); notify("Saved ✓");
   }
@@ -4874,7 +4996,7 @@ function InternListItem({l,refresh,notify,onEdit,actor,user}){
       autoRef.current=setTimeout(()=>{ commit(); }, 1500);
     }
     return ()=>clearTimeout(autoRef.current);
-  },[pendingStatus,note]);
+  },[pendingStatus,note,choice.mode]);
   return (
     <div className="border-t border-slate-100 p-3 first:border-0">
       <div className="flex items-start justify-between gap-2">
@@ -4906,6 +5028,7 @@ function InternListItem({l,refresh,notify,onEdit,actor,user}){
         {!open && <button onClick={()=>setOpen(true)} className="text-xs text-indigo-700 px-2 py-1 rounded-lg bg-indigo-50">📝 Note</button>}
         {dirty && <button onClick={commit} disabled={saving} className="text-xs px-3 py-1 rounded-lg bg-indigo-600 text-white disabled:opacity-40">{saving?"…":"Save"}</button>}
       </div>
+      {countable && <CallChoice choice={choice} intern={l["Assigned To"]||""}/>}
       {ln && <div className="text-[11px] text-slate-500 mt-1 bg-slate-50 rounded px-2 py-1">📝 {ln}</div>}
       {open &&
         <div className="mt-2 flex gap-2">

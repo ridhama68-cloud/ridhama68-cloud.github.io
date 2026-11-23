@@ -5319,10 +5319,6 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
         </div>}
 
       <div className="space-y-2">
-        <div className="flex gap-2">
-          <button onClick={()=>save({Status:"Website Sent"},{outcome:"Website Sent",msg:"Website sent ✓",stay:true})} disabled={saving}
-            className="flex-1 py-2 rounded-xl bg-cyan-600 text-white text-sm font-semibold disabled:opacity-40">🌐 Website sent</button>
-        </div>
         <select value={outcome} onChange={e=>onOutcomeChange(e.target.value)} className={"w-full border rounded-xl px-3 py-2 "+(outcome?"border-indigo-400 ring-2 ring-indigo-100 font-semibold":"")}>
           <option value="">— Select outcome —</option>{OUTCOMES.map(o=><option key={o}>{o}</option>)}</select>
         {outcome==="Call Back" &&

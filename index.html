@@ -2189,16 +2189,68 @@ const WA_SAMPLE_LINKS="Samples & prices: reactivify.com/start\n"
   +"The Portfolio: https://reactivify.com/samples/portfolio/\n"
   +"The Studio: https://reactivify.com/samples/studio/\n"
   +"The Signature: https://reactivify.com/samples/signature";
-// Message 1 - sent to people who ask "send me the details". Fills rating + reviews from the lead.
+// What we sell, per market (from brain/core/pricing.md and the site's content.py, 24 Nov 2026).
+// The lead's phone code picks the market: +1 US, +61 Australia, everything else India.
+const PLAN_PRICES={
+  IN:{a:"₹84,449", e:"₹1,04,449", f:"₹2,49,449", port:"₹45,000", studio:"₹79,500", sig:"₹1,80,000", tax:", plus GST",
+      spend:"Ad spend is separate: ₹50,000 to ₹2 lakh a month, paid by you straight to Meta and Google, so you see every rupee and keep the account.",
+      waSpend:"ad spend separate, paid by you straight to Meta and Google", terms:"\nHalf to start, half once live. Live in 4 days or your money back.", voice:" (Hindi and English)"},
+  US:{a:"$2,000", e:"$6,700", f:"$20,000", port:"$3,500", studio:"$6,000", sig:"$14,000", tax:"",
+      spend:"Ad spend is separate, paid by you straight to Meta and Google, so you see every dollar and keep the account.",
+      waSpend:"ad spend separate, paid by you straight to Meta and Google", terms:"", voice:""},
+  AU:{a:"A$3,000", e:"A$9,900", f:"A$29,900", port:"A$5,000", studio:"A$9,000", sig:"A$21,000", tax:"",
+      spend:"Ad spend is separate, paid by you straight to Meta and Google, so you see every dollar and keep the account.",
+      waSpend:"ad spend separate, paid by you straight to Meta and Google", terms:"", voice:""}
+};
+function planPrices(l){ const tz=leadTz(l); return PLAN_PRICES[tz==="America/New_York"?"US":tz==="Australia/Sydney"?"AU":"IN"]; }
+// Message 1 - sent to people who ask "send me the details": the Client Engine first, websites as a side line.
 function waDetailsMsg(l){
-  const rev=String(l.Reviews||"").trim(), rat=String(l.Rating||"").trim();
-  const proof=(rev&&rat)?("With "+rev+" reviews at "+rat+"\u2605, your work deserves this."):(rev?("With "+rev+" reviews, your work deserves this."):"Your work deserves this.");
+  const P=planPrices(l);
   return "Thanks for your time just now\n\n"
-    +"We help interior designers get more clients online: a website that shows your projects like a showroom, and ads that bring the right people to it.\n\n"
-    +"🌐 Website\n\u2714 Live in 4 days, or it's free\n\u2714 Pay half to start, half once it's live\n\u2714 You own everything, no monthly fees\n\n"
-    +"📣 Ads\n\u2714 Google and Instagram ads aimed at people looking for an interior designer in your city\n\u2714 We set them up and manage them for you\n\u2714 Simple monthly report: what you spent and how many enquiries came in\n\n"
-    +WA_SAMPLE_LINKS+"\n\n"
-    +proof+" Can I show you what yours could look like? 15 min on Thursday or Friday?";
+    +"We help interior designers get the right enquiries and turn them into site visits. We call it the Client Engine:\n\n"
+    +"📣 Meta and Google ads that ask budget, property and possession before anything reaches you\n"
+    +"💬 A WhatsApp assistant that replies within a minute, in your studio's name\n"
+    +"📅 Site visits booked onto your calendar, with reminders\n"
+    +"🔁 Follow-up every month until possession, so no enquiry goes cold\n\n"
+    +"Plans (a month"+P.tax+"; "+P.waSpend+"):\n"
+    +"• Ads "+P.a+"\n• Engine "+P.e+" (recommended)\n• Full Engine "+P.f+"\n\n"
+    +"Month to month, no lock-in. Websites are a separate one-time package if you need one.\n\n"
+    +"More: reactivify.com\n"
+    +"Can I do a free 20-minute client-flow audit for your studio? Thursday or Friday?";
+}
+// The same, as an email (Send email button). The person signs as the logged-in member.
+function emailSender(who){ const w=String(who||"").replace(/\s*\(.*\)\s*$/,"").trim(); return (!w || /^team$/i.test(w)) ? "Ridham" : w; }
+function emailGreeting(l){
+  // Names stored in capitals ("KOOL STUDIOS") read better as "Kool Studios".
+  const tidy=function(x){ x=String(x||"").trim(); return (/[A-Z]{3}/.test(x) && x===x.toUpperCase()) ? x.toLowerCase().replace(/(^|[\s(&-])([a-z])/g,function(m0,p1,c){ return p1+c.toUpperCase(); }) : x; };
+  const name=tidy(l.Name), clinic=tidy(l.Clinic);
+  if(name && name!==clinic) return "Hi "+name.split(/\s+/)[0]+",";
+  return "Hi "+(clinic?clinic.replace(/\s+(pvt\.?|private)\s*(ltd\.?|limited)\.?$/i,"").trim()+" team":"there")+",";
+}
+function packagesEmail(l, who){
+  const P=planPrices(l);
+  const body=emailGreeting(l)+"\n\n"
+    +"Thanks for speaking with me. As promised, here is what we do and what it costs.\n\n"
+    +"WHAT WE DO\n"
+    +"Reactivify helps interior designers get the right enquiries and turn them into site visits. Our main product is the Client Engine: we run your ads, answer every enquiry, filter it and follow it up until the client is ready to start.\n\n"
+    +"THE CLIENT ENGINE (monthly"+P.tax+")\n\n"
+    +"Ads: "+P.a+" a month\n- Meta and Google ads, run from your own account\n- Landing pages for every campaign\n- Retargeting the people who looked twice\n- Budget and possession asked on every form\n- Every enquiry straight to your WhatsApp\n- A four-line summary every Monday\n\n"
+    +"Engine: "+P.e+" a month (recommended)\nEverything in Ads, plus:\n- The WhatsApp assistant: replies within a minute, in your name\n- Site visits booked onto your calendar, with reminders\n- Reels cut from your walkthrough films\n- Follow-up once a month until possession\n- Your old enquiries revived in week one\n\n"
+    +"Full Engine: "+P.f+" a month\nEverything in Engine, plus the AI phone receptionist"+P.voice+", Instagram DMs answered, Google reviews asked for at every handover, scripted Reels and video editing every month, proposals and e-sign on the phone, and a monthly strategy call.\n\n"
+    +P.spend+" Month to month, no lock-in.\n\n"
+    +"WEBSITES (one-time, only if you need one)\n- The Portfolio: "+P.port+"\n- The Studio: "+P.studio+" (adds a walkthrough film of one home)\n- The Signature: "+P.sig+" (three walkthroughs)\n"
+    +P.terms+"\n\n"
+    +"NEXT STEP\n"
+    +"I'd suggest a free 20-minute client-flow audit: we look at how enquiries reach you today and where they slip away. Reply with a time that suits you, or WhatsApp me on +91 89208 56181.\n\n"
+    +emailSender(who)+"\nReactivify · reactivify.com";
+  return {to:String(l.Email||"").split(/[;,\s]+/).filter(function(x){ return /@/.test(x) && !/example\.com|mysite\.com/i.test(x); })[0]||"",
+          subject:"Reactivify: what we do and our packages", body:body};
+}
+// Opens a Gmail draft from growth@reactivify.com with the email filled in; you read it and press Send.
+function packagesEmailUrl(l, who){
+  const m=packagesEmail(l, who);
+  return "https://mail.google.com/mail/?authuser=growth@reactivify.com&view=cm&fs=1&tf=1&to="+encodeURIComponent(m.to)
+    +"&su="+encodeURIComponent(m.subject)+"&body="+encodeURIComponent(m.body);
 }
 /* ---- Client time zones ----
    Times are SAVED in India time (your calendar, reminders, backend). For overseas clients
@@ -2256,9 +2308,8 @@ function waMeetingMsg(l, who){
     +"\uD83D\uDCC5 "+meetWhenText(l,at)+"\n"
     +(link?("\uD83D\uDCCD Google Meet: "+link+"\n"):"")
     +"\u23F1 15\u201320 minutes\n\n"
-    +"Have a look before we talk:\n"+WA_SAMPLE_LINKS+"\n\n"
-    +"To make it useful, please keep ready:\n\u2022 3\u20134 of your best project photos (phone photos are fine)\n\u2022 Your Instagram handle\n\n"
-    +"On the call I'll show you a first look at your homepage and a simple ad plan for your studio. See you then!\n"
+    +"To make it useful, please keep ready:\n\u2022 Roughly how many enquiries you get a month\n\u2022 Where they come from (Instagram, Google, referrals)\n\n"
+    +"On the call I'll walk through how enquiries reach you today and where the Engine would help. See you then!\n"
     +"\u2014 "+(sender?(sender+", "):"")+"Reactivify";
 }
 function todayISO(){ const d=new Date(); return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }
@@ -5309,10 +5360,10 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
       </div>
       <div className="grid grid-cols-2 gap-2">
         <a href={"tel:"+telOf(lead.Phone)} className="text-center py-3 rounded-xl bg-green-600 text-white font-semibold">📞 Call</a>
-        <a href={"mailto:"+(lead.Email||"")} className="text-center py-3 rounded-xl bg-slate-600 text-white font-semibold">✉ Email</a>
+        <a href={packagesEmailUrl(lead, actor||user)} target="_blank" rel="noopener" className="text-center py-3 rounded-xl bg-slate-600 text-white font-semibold" title={"Opens a Gmail draft (growth@reactivify.com) with the Client Engine plans and prices"+(lead.Email?"":". No email saved for this lead: add the address in the draft")}>✉️ Send email</a>
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <a href={"https://wa.me/"+wa+"?text="+waMsg} target="_blank" className="text-center py-3 rounded-xl bg-emerald-500 text-white font-semibold" title="Samples, prices and their rating/reviews">💬 WhatsApp: details</a>
+        <a href={"https://wa.me/"+wa+"?text="+waMsg} target="_blank" className="text-center py-3 rounded-xl bg-emerald-500 text-white font-semibold" title="The Client Engine plans and prices">💬 WhatsApp: details</a>
         <button onClick={waMeetingClick} className="py-3 rounded-xl bg-emerald-700 text-white font-semibold" title={booked&&waMeet?"Sends the meeting confirmation with the Google Meet link":"Pick the meeting time; WhatsApp opens when you confirm"}>📅 WhatsApp: meeting</button>
       </div>
       <div className="text-center">

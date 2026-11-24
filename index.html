@@ -1439,6 +1439,20 @@ function saveStatusChange(leadPatch,intern,status,choice){
   gameShift(last.intern, day, status, id, 1);
   queueEvent({d:day, t:Date.now(), i:FIX_WHO, o:status, id:id});
 }
+// "Busy, call back later" button: the lead goes to Callbacks (no fixed time) with a note.
+const BUSY_NOTE="Busy right now, call back later";
+function busyCallBack(l,actor,notify){
+  const patch={ID:l.ID, Status:"Call Back", "Followup Date":"", "Followup Time":"", "Followup Sent":""};
+  const entry="["+nowStamp()+(actor?(" · "+actor):"")+"] ⏰ "+BUSY_NOTE;
+  const hist=String(l.Notes||"").trim(); patch.Notes=hist?(hist+"\n"+entry):entry;
+  patch["Last Follow-up Date"]=todayISO();
+  const intern=String(l["Assigned To"]||"").trim();
+  if(!intern){ saveInBackground({action:"upsert", lead:patch}); notify("Moved to Callbacks ⏰ (no one assigned, so not counted)"); return; }
+  // A result logged in the last 10 minutes is the same call: replace it instead of adding a dial.
+  const last=lastCallOf(l.ID);
+  saveStatusChange(patch, intern, "Call Back", {last:last, mode:(last && Date.now()-last.t<SAME_CALL_MS)?"same":"new"});
+  notify("Busy: moved to Callbacks ⏰");
+}
 function CallChoice({choice,intern}){
   const last=choice.last, same=choice.mode==="same";
   const at=last ? new Date(last.t).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"}) : "";
@@ -5136,6 +5150,7 @@ function InternListItem({l,refresh,notify,onEdit,actor,user}){
         {!open && <button onClick={()=>setOpen(true)} className="text-xs text-indigo-700 px-2 py-1 rounded-lg bg-indigo-50">📝 Note</button>}
         {canAgain && !again && <button onClick={callAgain} title={"Called again, same result: counts one more call as “"+statusOf(l)+"”"} className="text-xs text-green-700 px-2 py-1 rounded-lg bg-green-50 border border-green-200">📞 +1 call</button>}
         {again && <span className="text-xs text-green-700 flex items-center gap-1">✓ +1 call <button onClick={undoAgain} className="underline text-slate-500 px-1">Undo</button></span>}
+        {!isCallback(l) && <button onClick={()=>busyCallBack(l,actor,notify)} disabled={saving} title="They're busy: moves this lead to Callbacks with a note" className="text-xs text-violet-700 px-2 py-1 rounded-lg bg-violet-50 border border-violet-200">⏰ Busy, call later</button>}
         {dirty && <button onClick={commit} disabled={saving} className="text-xs px-3 py-1 rounded-lg bg-indigo-600 text-white disabled:opacity-40">{saving?"…":"Save"}</button>}
       </div>
       {countable && <CallChoice choice={choice} intern={l["Assigned To"]||""}/>}
@@ -5255,7 +5270,7 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
     const effOutcome = opts.outcome!==undefined ? opts.outcome : outcome;
     if(effOutcome) patch.Status=effOutcome;
     if(effOutcome==="Call Back"){ const cbi=cb.on?(foreign?convertDT(cb.date,cb.time,ltz,IST_TZ):cb):null; patch["Followup Date"]=cbi?cbi.date:""; patch["Followup Time"]=cbi?cbi.time:""; patch["Followup Sent"]=""; }
-    let noteText=note.trim();
+    let noteText=[opts.addNote, note.trim()].filter(Boolean).join(" — ");
     if(effOutcome==="Landed" && !opts.noStat){ const amt=askAmount("🏆 Client landed! Deal value in ₹ (optional):"); if(amt) noteText="💰 Landed "+inr(amt)+(noteText?(" — "+noteText):""); }
     if(noteText){ const entry="["+nowStamp()+" · "+(actor||user)+"] "+noteText;
       patch.Notes=notesHistory?(notesHistory+"\n"+entry):entry; patch["Last Follow-up Date"]=todayISO(); }
@@ -5404,6 +5419,8 @@ function CallCard({lead,user,actor,position,total,onPrev,onNext,onSaved,notify})
       <div className="space-y-2">
         <select value={outcome} onChange={e=>onOutcomeChange(e.target.value)} className={"w-full border rounded-xl px-3 py-2 "+(outcome?"border-indigo-400 ring-2 ring-indigo-100 font-semibold":"")}>
           <option value="">— Select outcome —</option>{OUTCOMES.map(o=><option key={o}>{o}</option>)}</select>
+        {outcome!=="Call Back" && <button onClick={()=>save({"Followup Date":"","Followup Time":"","Followup Sent":""},{outcome:"Call Back", addNote:"⏰ "+BUSY_NOTE, msg:"Busy: moved to Callbacks ⏰"})} disabled={saving}
+          className="w-full py-2 rounded-xl bg-violet-50 border border-violet-200 text-violet-700 text-sm font-semibold">⏰ Busy right now, call back later</button>}
         {outcome==="Call Back" &&
           <div className="rounded-xl bg-violet-50 border border-violet-100 p-3 flex items-center gap-2 flex-wrap game-fade">
             <span className="text-sm font-semibold text-violet-800">📞 Call back</span>

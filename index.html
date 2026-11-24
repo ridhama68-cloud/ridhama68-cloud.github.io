@@ -82,16 +82,16 @@ const API_URL = "https://reactivifyapi.reactivify.workers.dev";
 const APPS_URL = "https://script.google.com/macros/s/AKfycbw6_2z2rT-U2mmpFhRl8hysSYnxLqmyArFfZHUU9EnkbirL6wc4QchUs5rcXho28aOZVQ/exec";
 
 const OUTCOMES = [
-  "Not Answering","Voicemail","Owner Not Available","Interested","Website Sent","Not Interested",
+  "Not Answering","Voicemail","Owner Not Available","Interested","Details Sent","Not Interested",
   "Meeting Booked","Schedule Follow-up","Call Back","Landed","Lost","No Show","Dumped"
 ];
 // Statuses that still need work — shown in the daily queue. Ordered New-first
 // (untouched leads at the top so interns don't scroll past yesterday's calls).
-const FRESH_STATUSES = ["New","Not Answering","Voicemail","Schedule Follow-up","Owner Not Available","Interested","Website Sent"];
-const STATUS_RANK = { "new":0, "not answering":1, "voicemail":1, "schedule follow-up":2, "owner not available":3, "interested":4, "website sent":5 };
+const FRESH_STATUSES = ["New","Not Answering","Voicemail","Schedule Follow-up","Owner Not Available","Interested","Details Sent","Website Sent"];
+const STATUS_RANK = { "new":0, "not answering":1, "voicemail":1, "schedule follow-up":2, "owner not available":3, "interested":4, "details sent":5, "website sent":5 };
 // Statuses that mean a meeting/follow-up is CLOSED (out of the pending pipeline)
 const CLOSED_STATUSES = ["Landed","Lost","No Show","Not Interested","Dumped"];
-const CONVO_OUTCOMES = ["Interested","Not Interested","Website Sent","Landed","Call Back"];
+const CONVO_OUTCOMES = ["Interested","Not Interested","Details Sent","Website Sent","Landed","Call Back"];
 // Callbacks keep their (optional) time in the follow-up date/time columns, so the backend's
 // follow-up reminder email also fires for them. They stay out of the follow-up pipeline.
 function callbackAt(l){ return /^call back$/i.test(String(l.Status||"").trim()) ? leadDateTime(l["Followup Date"], l["Followup Time"]) : null; }
@@ -306,7 +306,7 @@ const BADGES = [
   {id:"goal",    icon:"🎯", name:"Goal Getter",   desc:"Hit the daily goal ("+GAME_GOAL+" dials)", test:function(g){ return g.best.dials>=GAME_GOAL; }},
   {id:"d50",     icon:"💯", name:"Half Century",  desc:"50 dials in one day",                    test:function(g){ return g.best.dials>=50; }},
   {id:"talk10",  icon:"💬", name:"Smooth Talker", desc:"10 conversations in one day",            test:function(g){ return g.best.convos>=10; }},
-  {id:"web5",    icon:"🌐", name:"Show & Tell",   desc:"Send 5 websites in one day",             test:function(g){ return g.best.web>=5; }},
+  {id:"web5",    icon:"📨", name:"Show & Tell",   desc:"Send details to 5 studios in one day",             test:function(g){ return g.best.web>=5; }},
   {id:"meet1",   icon:"📅", name:"Door Opener",   desc:"Book your first meeting",                test:function(g){ return g.total.meet>=1; }},
   {id:"hat",     icon:"🎩", name:"Hat-trick",     desc:"3 meetings booked in one day",           test:function(g){ return g.best.meet>=3; }},
   {id:"show1",   icon:"🤩", name:"Showtime",      desc:"A booked client shows up",               test:function(g){ return g.total.showed>=1; }},
@@ -331,7 +331,7 @@ function gRecStats(rec){
   const showed=n("Showed Up");
   const dials=Math.max(0, ((rec && rec.calls) || 0) - n("Dumped") - showed);
   const convos=Math.max(0, dials - n("Not Answering") - n("Voicemail"));
-  const web=n("Website Sent"), meet=n("Meeting Booked"), landed=n("Landed");
+  const web=n("Details Sent")+n("Website Sent"), meet=n("Meeting Booked"), landed=n("Landed");
   const points=dials*GAME_PTS.dial + convos*GAME_PTS.convo + web*GAME_PTS.web + meet*GAME_PTS.meet + showed*GAME_PTS.showed + landed*GAME_PTS.landed;
   return {dials:dials,convos:convos,web:web,meet:meet,showed:showed,landed:landed,noshow:n("No Show"),points:points};
 }
@@ -440,8 +440,8 @@ function gameBump(intern,outcome,opId,opt){
   _gEmit();
   if(s.points<=0) return;
   const combo=_combo.n, who=hypeName(intern);
-  const landed=/landed/i.test(outcome), meet=/meeting booked/i.test(outcome), show=/showed up/i.test(outcome), web=/website sent/i.test(outcome);
-  const label = landed?"🏆 Client landed!" : meet?"📅 Meeting booked!" : show?"🤩 Show-up!" : web?"🌐 Website sent" : s.convos?"💬 Conversation":"📞 Dial";
+  const landed=/landed/i.test(outcome), meet=/meeting booked/i.test(outcome), show=/showed up/i.test(outcome), web=/website sent|details sent/i.test(outcome);
+  const label = landed?"🏆 Client landed!" : meet?"📅 Meeting booked!" : show?"🤩 Show-up!" : web?"📨 Details sent" : s.convos?"💬 Conversation":"📞 Dial";
   fx({type:"pop", text:label+"   +"+s.points+" pts", tone:(landed||meet||show)?"bg-gradient-to-r from-amber-500 to-orange-500":(s.convos?"bg-gradient-to-r from-indigo-600 to-violet-600":"bg-slate-800")});
   if(landed){
     sfx("landed"); confetti(2.4);
@@ -964,7 +964,7 @@ function Leaderboard({me,title}){
                   {r.streak>0 && <span className="text-[11px] text-orange-500 font-semibold">🔥{r.streak}</span>}
                 </div>
                 <div className="mt-1 h-1.5 rounded-full bg-slate-100 overflow-hidden"><div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-fuchsia-500 game-bar" style={{width:Math.round(r.s.points/top*100)+"%"}}/></div>
-                <div className="text-[11px] text-slate-500 mt-1 tabular-nums">📞 {r.s.dials} · 💬 {r.s.convos} · 🌐 {r.s.web} · 📅 {r.s.meet}{r.s.landed?(" · 🏆 "+r.s.landed):""}{(r.s.showed+r.s.noshow)>0?(" · 🤝 "+Math.round(r.s.showed/(r.s.showed+r.s.noshow)*100)+"% show-up"):""}</div>
+                <div className="text-[11px] text-slate-500 mt-1 tabular-nums">📞 {r.s.dials} · 💬 {r.s.convos} · 📨 {r.s.web} · 📅 {r.s.meet}{r.s.landed?(" · 🏆 "+r.s.landed):""}{(r.s.showed+r.s.noshow)>0?(" · 🤝 "+Math.round(r.s.showed/(r.s.showed+r.s.noshow)*100)+"% show-up"):""}</div>
               </div>
               <div className="text-right"><div className="font-extrabold text-indigo-700 tabular-nums">{r.s.points}</div><div className="text-[10px] text-slate-400">pts</div></div>
             </div>
@@ -972,7 +972,7 @@ function Leaderboard({me,title}){
         })}
       </div>
       <WeeklyAwards/>
-      <div className="text-[11px] text-slate-400 mt-3">Points: dial 1 · conversation +3 · website sent +5 · meeting booked +15 · show-up +20 · landed +50 · missions +{MISSION_BONUS} each (+{MISSION_SWEEP} for all 3) · daily goal {GAME_GOAL} dials</div>
+      <div className="text-[11px] text-slate-400 mt-3">Points: dial 1 · conversation +3 · details sent +5 · meeting booked +15 · show-up +20 · landed +50 · missions +{MISSION_BONUS} each (+{MISSION_SWEEP} for all 3) · daily goal {GAME_GOAL} dials</div>
     </div>
   );
 }
@@ -1007,7 +1007,7 @@ function missionsFor(day,name){
   let h=_seed(day+"|"+String(name||"").toLowerCase());
   const r=function(n){ h=Math.imul(h^(h>>>15),2246822507)>>>0; return h%n; };
   const dialT=[25,30,35,40][r(4)], convoT=[6,8,10][r(3)];
-  const third = r(2)===0 ? {k:"web", n:[2,3,4][r(3)], icon:"🌐", label:"Send {n} websites"} : {k:"meet", n:1, icon:"📅", label:"Book a meeting"};
+  const third = r(2)===0 ? {k:"web", n:[2,3,4][r(3)], icon:"📨", label:"Send details to {n} studios"} : {k:"meet", n:1, icon:"📅", label:"Book a meeting"};
   return [
     {k:"dials", n:dialT, icon:"📞", label:"Make {n} dials"},
     {k:"convos", n:convoT, icon:"💬", label:"Have {n} conversations"},
@@ -1293,7 +1293,7 @@ function TVMode(){
           <div className="text-right"><div className="text-5xl font-black tabular-nums">{clock.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"})}</div><div className="text-white/60">{clock.toLocaleDateString([], {weekday:"long", day:"numeric", month:"long"})}</div></div>
         </div>
         <div className="grid grid-cols-4 gap-4">
-          {tile(totals.dials,"Dials","📞")}{tile(totals.convos,"Conversations","💬")}{tile(totals.web,"Websites sent","🌐")}{tile(totals.meet,"Meetings booked","📅")}
+          {tile(totals.dials,"Dials","📞")}{tile(totals.convos,"Conversations","💬")}{tile(totals.web,"Details sent","📨")}{tile(totals.meet,"Meetings booked","📅")}
         </div>
         <div className="grid grid-cols-3 gap-6">
           <div className="col-span-2 rounded-3xl bg-white/5 p-6 space-y-3">
@@ -1305,7 +1305,7 @@ function TVMode(){
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-3"><span className="text-3xl font-black truncate">{r.name}</span><span className="text-sm bg-white/10 rounded-full px-3 py-1">{r.level.icon} {r.level.name}</span>{r.streak>0 && <span className="text-orange-300 font-bold">🔥{r.streak}</span>}</div>
                   <div className="mt-2 h-3 rounded-full bg-white/10 overflow-hidden"><div className="h-full rounded-full bg-gradient-to-r from-indigo-400 via-violet-400 to-fuchsia-400 game-bar" style={{width:Math.max(3,r.s.points/top*100)+"%"}}/></div>
-                  <div className="text-white/70 mt-1.5">📞 {r.s.dials} · 💬 {r.s.convos} · 🌐 {r.s.web} · 📅 {r.s.meet}</div>
+                  <div className="text-white/70 mt-1.5">📞 {r.s.dials} · 💬 {r.s.convos} · 📨 {r.s.web} · 📅 {r.s.meet}</div>
                 </div>
                 <div className="text-right"><div className="text-5xl font-black tabular-nums">{r.s.points}</div><div className="text-white/60 text-sm">points</div></div>
               </div>
@@ -3329,7 +3329,7 @@ function DailyActivity({leads,internNames}){
   const rows=internNames.map(function(name){
     const dd = daily && daily[day] && daily[day][name];
     if(dd){
-      const by={}; Object.keys(dd).forEach(function(k){ if(k!=="calls") by[k]=dd[k]; });
+      const by={}; Object.keys(dd).forEach(function(k){ if(k==="calls") return; const n=k==="Website Sent"?"Details Sent":k; by[n]=(by[n]||0)+dd[k]; });
       return { name:name, count:Math.max(0,(dd.calls||0)-(dd["Showed Up"]||0)), by:by, real:true };
     }
     const mine=leads.filter(function(l){ return String(l["Assigned To"]||"").trim().toLowerCase()===name.toLowerCase(); });
@@ -3689,17 +3689,17 @@ function TeamActivity({sessions,internNames}){
 // dialed/convos/website/booked/show-ups/closes, and the leads' Timestamp for
 // "Leads". The chosen date range is remembered in localStorage until changed.
 /* ================== PIPELINE BOARD ================== */
-// Kanban board: move a lead Working -> Website Sent -> Meeting Booked -> Showed up -> Closed.
+// Kanban board: move a lead Working -> Details Sent -> Meeting Booked -> Showed up -> Closed.
 // Advancing stamps that milestone on the backend (earlier stamps are kept), so the
 // dashboard funnel never decreases. Dead outcomes (No Show / Not Interested / Dumped)
 // drop off the board but keep whatever milestones they already reached.
-const PIPE_COLS=["Working","Website Sent","Meeting Booked","Showed up","Closed"];
+const PIPE_COLS=["Working","Details Sent","Meeting Booked","Showed up","Closed"];
 function pipeStage(l){
   const s=String(l.Status||"").toLowerCase();
   if(/landed/.test(s)) return "Closed";
   if(/not interested|dumped|no show/.test(s)) return null;
   if(/meeting booked/.test(s)) return l["Showup Date"]?"Showed up":"Meeting Booked";
-  if(/website sent/.test(s)) return "Website Sent";
+  if(/website sent|details sent/.test(s)) return "Details Sent";
   return "Working";
 }
 function PipelineBoard({leads,refresh,notify,members}){
@@ -3721,7 +3721,7 @@ function PipelineBoard({leads,refresh,notify,members}){
   scoped.forEach(function(l){ const c=pipeStage(l); if(c) byCol[c].push(l); });
   async function apply(l,stage,extra){
     const p={action:"upsert", lead:Object.assign({ID:l.ID},extra||{})};
-    if(stage==="Website Sent"){ p.lead.Status="Website Sent"; p.logStat={intern:l["Assigned To"]||"", outcome:"Website Sent", dial:false}; }
+    if(stage==="Details Sent"){ p.lead.Status="Details Sent"; p.logStat={intern:l["Assigned To"]||"", outcome:"Details Sent", dial:false}; }
     else if(stage==="Meeting Booked"){ p.lead.Status="Meeting Booked"; p.logStat={intern:l["Assigned To"]||"", outcome:"Meeting Booked", dial:false}; }
     else if(stage==="Showed up"){ if(!/meeting booked/i.test(l.Status||"")) p.lead.Status="Meeting Booked"; p.logStat={intern:l["Assigned To"]||"", outcome:"Showed Up", dial:false}; }
     else if(stage==="Closed"){ p.lead.Status="Landed"; p.logStat={intern:l["Assigned To"]||"", outcome:"Landed", dial:false}; }
@@ -3781,7 +3781,7 @@ function PipelineBoard({leads,refresh,notify,members}){
 }
 
 // Pipeline funnel stages -> the lead milestone-stamp column each one counts.
-const FUNNEL_STAGES=[["Leads","Timestamp","text-slate-800"],["Dialed","Dialed Date","text-indigo-600"],["Conversation","Convo Date","text-blue-600"],["Website Sent","Website Sent Date","text-cyan-600"],["Meeting Booked","Booked Date","text-green-600"],["Showed up","Showup Date","text-emerald-600"],["Closed","Closed Date","text-emerald-700"]];
+const FUNNEL_STAGES=[["Leads","Timestamp","text-slate-800"],["Dialed","Dialed Date","text-indigo-600"],["Conversation","Convo Date","text-blue-600"],["Details Sent","Website Sent Date","text-cyan-600"],["Meeting Booked","Booked Date","text-green-600"],["Showed up","Showup Date","text-emerald-600"],["Closed","Closed Date","text-emerald-700"]];
 
 function FunnelDashboard({leads,internNames}){
   function isoOf(d){ return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }
@@ -3790,7 +3790,8 @@ function FunnelDashboard({leads,internNames}){
     const t=todayISO(); return {mode:"today", from:t, to:t};
   });
   useEffect(function(){ try{ localStorage.setItem("reactivify.dashRange", JSON.stringify(range)); }catch(e){} },[range]);
-  const [ratio,setRatio]=useState(function(){ try{ return JSON.parse(localStorage.getItem("reactivify.dashRatio")||"null")||{from:"Dialed",to:"Closed"}; }catch(e){ return {from:"Dialed",to:"Closed"}; } });
+  const [ratio,setRatio]=useState(function(){ try{ const r=JSON.parse(localStorage.getItem("reactivify.dashRatio")||"null")||{from:"Dialed",to:"Closed"};
+    ["from","to"].forEach(function(k){ if(r[k]==="Website Sent") r[k]="Details Sent"; }); return r; }catch(e){ return {from:"Dialed",to:"Closed"}; } });
   useEffect(function(){ try{ localStorage.setItem("reactivify.dashRatio", JSON.stringify(ratio)); }catch(e){} },[ratio]);
   const [ratioWho,setRatioWho]=useState(function(){ try{ return localStorage.getItem("reactivify.dashRatioWho")||"All"; }catch(e){ return "All"; } });
   useEffect(function(){ try{ localStorage.setItem("reactivify.dashRatioWho", ratioWho); }catch(e){} },[ratioWho]);
@@ -3822,7 +3823,7 @@ function FunnelDashboard({leads,internNames}){
   const [daily,setDaily]=useState(null);
   useEffect(function(){ apiGet("getDailyCalls").then(function(r){ if(r&&r.ok) setDaily(r.daily||{}); }).catch(function(){}); },[leads]);
   function dailyCounts(name){
-    const o={"Dialed":0,"Conversation":0,"Website Sent":0,"Meeting Booked":0,"Showed up":0,"Closed":0};
+    const o={"Dialed":0,"Conversation":0,"Details Sent":0,"Meeting Booked":0,"Showed up":0,"Closed":0};
     if(!daily) return o;
     Object.keys(daily).forEach(function(day){
       if(day<from||day>to) return;
@@ -3834,7 +3835,7 @@ function FunnelDashboard({leads,internNames}){
         const showed=n("Showed Up");
         const dials=(rec.calls||0)-n("Dumped")-showed;
         o["Dialed"]+=dials; o["Conversation"]+=dials-n("Not Answering")-n("Voicemail");
-        o["Website Sent"]+=n("Website Sent"); o["Meeting Booked"]+=n("Meeting Booked"); o["Showed up"]+=showed; o["Closed"]+=n("Landed");
+        o["Details Sent"]+=n("Details Sent")+n("Website Sent"); o["Meeting Booked"]+=n("Meeting Booked"); o["Showed up"]+=showed; o["Closed"]+=n("Landed");
       });
     });
     return o;
@@ -3852,8 +3853,8 @@ function FunnelDashboard({leads,internNames}){
   const ratioRow=ratioWho==="All" ? null : rows.find(function(r){ return r.name===ratioWho; });
   const rsrc=ratioRow||team;
   const presets=[["today","Today"],["7d","Last 7 days"],["30d","Last 30 days"],["month","This month"],["all","All time"]];
-  const chain=["Dialed","Conversation","Website Sent","Meeting Booked","Showed up","Closed"];
-  const chipCols={"Leads":"text-slate-800","Dialed":"text-indigo-600","Conversation":"text-blue-600","Website Sent":"text-cyan-600","Meeting Booked":"text-green-600","Showed up":"text-emerald-600","Closed":"text-emerald-700"};
+  const chain=["Dialed","Conversation","Details Sent","Meeting Booked","Showed up","Closed"];
+  const chipCols={"Leads":"text-slate-800","Dialed":"text-indigo-600","Conversation":"text-blue-600","Details Sent":"text-cyan-600","Meeting Booked":"text-green-600","Showed up":"text-emerald-600","Closed":"text-emerald-700"};
   return (
     <div className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -3909,7 +3910,7 @@ function FunnelDashboard({leads,internNames}){
       <div className="overflow-x-auto no-scrollbar">
         <table className="w-full text-sm">
           <thead className="text-slate-500 text-left"><tr>
-            <th className="py-1 pr-3">Member</th>{FUNNEL_STAGES.map(function(s){ return <th key={s[0]} className="py-1 px-2">{s[0]==="Meeting Booked"?"Booked":s[0]==="Conversation"?"Convos":s[0]==="Website Sent"?"Website":s[0]}</th>; })}<th className="py-1 px-2 text-indigo-700" title={ratio.from+" → "+ratio.to}>Ratio</th></tr></thead>
+            <th className="py-1 pr-3">Member</th>{FUNNEL_STAGES.map(function(s){ return <th key={s[0]} className="py-1 px-2">{s[0]==="Meeting Booked"?"Booked":s[0]==="Conversation"?"Convos":s[0]==="Details Sent"?"Details":s[0]}</th>; })}<th className="py-1 px-2 text-indigo-700" title={ratio.from+" → "+ratio.to}>Ratio</th></tr></thead>
           <tbody>
             {rows.map(function(r){ return <tr key={r.name} className="border-t border-slate-100">
               <td className="py-2 pr-3 font-medium">{r.name}</td>
@@ -4274,7 +4275,7 @@ function StatusBadge({status}){
   const s=status||"New";
   const color=/Booked/i.test(s)?"bg-green-100 text-green-700"
     :/Landed/i.test(s)?"bg-emerald-100 text-emerald-700"
-    :/Website Sent/i.test(s)?"bg-cyan-100 text-cyan-700"
+    :/Website Sent|Details Sent/i.test(s)?"bg-cyan-100 text-cyan-700"
     :/Interested/i.test(s)&&!/Not/i.test(s)?"bg-blue-100 text-blue-700"
     :/Dumped|Not Interested/i.test(s)?"bg-slate-200 text-slate-500"
     :/Follow/i.test(s)?"bg-amber-100 text-amber-700"
@@ -4322,7 +4323,7 @@ function ArchiveSection({leads,refresh,notify}){
     g.ids.push(l.ID);
     const st=String(l.Status||"New");
     if(st.toLowerCase()!=="new") g.worked++;
-    if(/booked/i.test(st) || /^(interested|website sent|landed)$/i.test(st.trim())) g.active++;
+    if(/booked/i.test(st) || /^(interested|details sent|website sent|landed)$/i.test(st.trim())) g.active++;
   });
   const list=Object.keys(groups).map(function(k){ return groups[k]; }).sort(function(a,b){ return b.ids.length-a.ids.length; });
   const keep=list.filter(function(g){ return g.name.toLowerCase()===KEEP; });
@@ -4617,7 +4618,7 @@ function funnelStats(leads){
   const isNew=leads.filter(function(l){ const s=String(l.Status||"").trim(); return !s || /^new$/i.test(s); }).length;
   const interested=has(/^interested$/i), notInt=has(/^not interested$/i);
   const booked=has(/^meeting booked$/i), followup=has(/^schedule follow-up$/i);
-  const noShow=has(/^no show$/i), landed=has(/^landed$/i), website=has(/^website sent$/i);
+  const noShow=has(/^no show$/i), landed=has(/^landed$/i), website=has(/^(details|website) sent$/i);
   const contacted=total-isNew;                                   // worked at least once
   const meetings=booked+noShow+landed;                           // reached the meeting stage
   const convos=interested+notInt+booked+followup+noShow+landed+website;  // actually spoke to them
@@ -4788,7 +4789,7 @@ function isFresh(l){
   return inSet && String(l["Last Follow-up Date"]||"").indexOf(todayISO())<0;
 }
 
-const STATUS_DOT={"Lost":"#e11d48","Call Back":"#8b5cf6","New":"#94a3b8","Not Answering":"#f97316","Voicemail":"#ec4899","Owner Not Available":"#fb923c","Interested":"#3b82f6","Website Sent":"#06b6d4","Schedule Follow-up":"#f59e0b","Meeting Booked":"#22c55e","No Show":"#ef4444","Not Interested":"#64748b","Dumped":"#334155"};
+const STATUS_DOT={"Lost":"#e11d48","Call Back":"#8b5cf6","New":"#94a3b8","Not Answering":"#f97316","Voicemail":"#ec4899","Owner Not Available":"#fb923c","Interested":"#3b82f6","Details Sent":"#06b6d4","Website Sent":"#06b6d4","Schedule Follow-up":"#f59e0b","Meeting Booked":"#22c55e","No Show":"#ef4444","Not Interested":"#64748b","Dumped":"#334155"};
 function InternFilters({mine,sel,toggleChip,fday,setFday,sortBy,setSortBy}){
   const cs=function(name){ return mine.filter(function(l){ return statusOf(l).toLowerCase()===name.toLowerCase(); }).length; };
   const chips=[
@@ -4798,7 +4799,7 @@ function InternFilters({mine,sel,toggleChip,fday,setFday,sortBy,setSortBy}){
     ["Voicemail","📭 Voicemail", cs("Voicemail")],
     ["Owner Not Available","Owner N/A", cs("Owner Not Available")],
     ["Interested","Interested", cs("Interested")],
-    ["Website Sent","🌐 Website", cs("Website Sent")],
+    ["Details Sent","📨 Details sent", cs("Details Sent")],
     ["Schedule Follow-up","Follow-up", cs("Schedule Follow-up")],
     ["Call Back","📞 Callbacks", cs("Call Back")],
     ["Meeting Booked","Meeting", cs("Meeting Booked")],

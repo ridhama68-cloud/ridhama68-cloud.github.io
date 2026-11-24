@@ -1362,7 +1362,7 @@ setTimeout(flushEvents, 4000);
 // The time log gets a correction entry "F<random>~<call id>" under the person "~fix", which the
 // Community sync skips (it only imports the intern's own entries), so it isn't a second call there.
 // The backend can only log on today's date, so only today's calls can have their result replaced.
-const SAME_CALL_MS=10*60000, FIX_WHO="~fix";
+const SAME_CALL_MS=10*60000, FIX_WHO="~fix", UNDONE="(undone)";
 let _callEv={}, _callEvAt=0;
 const _callEvSubs=[];
 function istDayOf(t){ return new Date(t+330*60000).toISOString().slice(0,10); }
@@ -1392,7 +1392,7 @@ function correctedCalls(list){
   return (list||[]).filter(function(e){ return e[1]!==FIX_WHO; }).map(function(e){
     const f=fix[e[3]];
     return {t:e[0], intern:e[1], outcome:f?f[2]:e[2], id:e[3], lastId:f?f[3]:e[3]};
-  });
+  }).filter(function(c){ return c.outcome!==UNDONE; });
 }
 // The most recent call on this lead today, or null.
 function lastCallOf(leadId){
@@ -5000,6 +5000,35 @@ function InternListItem({l,refresh,notify,onEdit,actor,user}){
   // Follow a status saved elsewhere (Edit lead, refresh), or this row would save the old one back.
   useEffect(()=>{ setPendingStatus(statusOf(l)); },[statusOf(l)]);
 
+  // Called again with the same result (the status doesn't change, so the dropdown can't count it).
+  const [again,setAgain]=useState(null);
+  const againTimer=useRef(null);
+  useEffect(()=>()=>clearTimeout(againTimer.current),[]);
+  const canAgain=!statusChanged && statusOf(l)!=="New" && !isClosing(statusOf(l));
+  function callAgain(){
+    const intern=String(l["Assigned To"]||"").trim();
+    if(!intern){ notify("No one is assigned to this lead, so the call can't be counted"); return; }
+    const outcome=statusOf(l), patch={ID:l.ID};
+    if(note.trim()){ const entry="["+nowStamp()+(actor?(" · "+actor):"")+"] "+note.trim();
+      const hist=String(l.Notes||"").trim(); patch.Notes=hist?(hist+"\n"+entry):entry; }
+    const p={action:"upsert", lead:patch, logStat:{intern:intern, outcome:outcome}};
+    saveInBackground(p);
+    setNote(""); setOpen(false);
+    clearTimeout(againTimer.current);
+    setAgain({id:p.opId, intern:intern, outcome:outcome, day:todayISO()});
+    againTimer.current=setTimeout(function(){ setAgain(null); },10000);
+    notify("Counted another call: "+outcome+" ✓");
+  }
+  function undoAgain(){
+    const a=again; if(!a) return;
+    clearTimeout(againTimer.current); setAgain(null);
+    // Waits behind the call in the saved queue, and is applied once even if retried.
+    saveInBackground({action:"unlogStat", opId:"undo-"+a.id, intern:a.intern, outcome:a.outcome, day:a.day});
+    gameShift(a.intern, a.day, a.outcome, "undo-"+a.id, -1);
+    queueEvent({d:a.day, t:Date.now(), i:FIX_WHO, o:UNDONE, id:"F"+Math.random().toString(36).slice(2,9).padEnd(7,"0")+"~"+a.id});
+    notify("Call taken back");
+  }
+
   // Save status + note TOGETHER in one write. Won't fire on its own for a single
   // field — the user (or the both-filled autosave) triggers it.
   async function commit(){
@@ -5053,6 +5082,8 @@ function InternListItem({l,refresh,notify,onEdit,actor,user}){
           {["New"].concat(OUTCOMES).map(o=><option key={o}>{o}</option>)}
         </select>
         {!open && <button onClick={()=>setOpen(true)} className="text-xs text-indigo-700 px-2 py-1 rounded-lg bg-indigo-50">📝 Note</button>}
+        {canAgain && !again && <button onClick={callAgain} title={"Called again, same result: counts one more call as “"+statusOf(l)+"”"} className="text-xs text-green-700 px-2 py-1 rounded-lg bg-green-50 border border-green-200">📞 +1 call</button>}
+        {again && <span className="text-xs text-green-700 flex items-center gap-1">✓ +1 call <button onClick={undoAgain} className="underline text-slate-500 px-1">Undo</button></span>}
         {dirty && <button onClick={commit} disabled={saving} className="text-xs px-3 py-1 rounded-lg bg-indigo-600 text-white disabled:opacity-40">{saving?"…":"Save"}</button>}
       </div>
       {countable && <CallChoice choice={choice} intern={l["Assigned To"]||""}/>}
